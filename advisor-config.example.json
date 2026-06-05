@@ -1,0 +1,9 @@
+{
+  "_comment": "Customer intake answers. Copy to advisor-config.json and pass --config. Flags override.",
+  "credit_price": 3.0,
+  "days": 30,
+  "_preset": "balanced",
+  "mat_min_runs": 12,
+  "mat_min_avg_sec": 3.0,
+  "mat_min_credits": 0.5
+}

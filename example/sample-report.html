@@ -1,0 +1,57 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sigma → Snowflake Materialization — Northwind Trading Co. (sample)</title><style>
+:root{--ink:#1a2233;--mut:#5b6779;--line:#e6e9f0;--bg:#f6f8fb;--accent:#2f6f4f;--mat:#2f9e44;--rev:#868e96;}
+*{box-sizing:border-box}body{margin:0;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;color:var(--ink);background:var(--bg)}
+.wrap{max-width:980px;margin:0 auto;padding:0 28px 80px}
+header{background:linear-gradient(135deg,#173a2b,#2f9e44);color:#fff;padding:48px 0 96px}
+header .wrap{padding-bottom:0}.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:12px;opacity:.85;margin:0}
+header h1{font-size:30px;margin:8px 0 4px}header .sub{opacity:.92}
+.ro{display:inline-block;margin-top:16px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);padding:5px 12px;border-radius:20px;font-size:12.5px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:-52px 0 0}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 6px 20px rgba(20,30,60,.06)}
+.kpi-v{font-size:24px;font-weight:700;color:var(--accent)}.kpi-l{font-size:13px;font-weight:600;margin-top:2px}.kpi-s{font-size:12px;color:var(--mut)}
+h2{font-size:20px;margin:40px 0 8px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:13px;margin-top:12px}
+th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:#eef3f0;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut)}
+td.num{text-align:right;font-variant-numeric:tabular-nums}td.obj{font-weight:600}
+tr:last-child td{border-bottom:none}
+.pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;color:#fff;white-space:nowrap}
+.pill.mat{background:var(--mat)}.pill.imp{background:#1971c2}.pill.rev{background:var(--rev)}
+.why{color:var(--mut);font-size:11.5px;margin-top:4px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin-top:14px}
+.card h3{margin:0 0 6px;font-size:16px}.opt{border-left:4px solid var(--mat);padding-left:14px;margin:12px 0}
+.opt.a{border-left-color:#1971c2}code{background:#eef1f8;padding:1px 5px;border-radius:4px;font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px}
+.note{color:var(--mut);font-size:12.5px}footer{color:var(--mut);font-size:12.5px;margin-top:36px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body>
+<header><div class="wrap"><p class="eyebrow">Sigma · Snowflake Cost &amp; Materialization</p>
+<h1>Northwind Trading Co. (sample)</h1><div class="sub">High-compute Sigma queries and how to reduce them · scope: account-wide · last 30 days</div>
+<span class="ro">🔒 Read-only analysis — no changes made to Snowflake or Sigma</span></div></header>
+<div class="wrap">
+<div class="kpis"><div class='kpi'><div class='kpi-v'>889</div><div class='kpi-l'>Sigma queries</div><div class='kpi-s'>last 30 days</div></div><div class='kpi'><div class='kpi-v'>$107</div><div class='kpi-l'>Compute cost</div><div class='kpi-s'>35.7 credits @ $3.0</div></div><div class='kpi'><div class='kpi-v'>3</div><div class='kpi-l'>Materialize</div><div class='kpi-s'>repetitive + non-trivial</div></div><div class='kpi'><div class='kpi-v'>2</div><div class='kpi-l'>Improve query</div><div class='kpi-s'>slow / large single runs</div></div></div>
+<h2>Top compute candidates</h2>
+<p class="note">Ranked by attributed Snowflake credits × frequency. <b>A · Improve query</b> lowers cost per run;
+<b>B · Materialize</b> removes redundant runs; <b>Monitor</b> = too cheap to be worth either today.
+An object is only flagged <b>Materialize</b> when it is genuinely repetitive <i>and</i> non-trivial per run —
+caching a fast, cheap query costs more to refresh than it saves.</p>
+<table><thead><tr><th>#</th><th>Object</th><th>Element</th><th class="num">Runs</th><th class="num">Credits</th>
+<th class="num">Avg s</th><th class="num">Max s</th><th>Recommended remediation</th></tr></thead>
+<tbody><tr><td>1</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/data-model/Sales-Mart-DM-aaa111' target='_blank' rel='noopener'>dm: Sales-Mart-DM-aaa111</a></td><td>(workbook load)</td><td class='num'>240</td><td class='num'>18.4000</td><td class='num'>2.10</td><td class='num'>6.00</td><td><span class='pill mat'>B · Materialize</span><div class='why'>Repetitive (240 runs) and non-trivial (2.1s avg, 18.40 cr) — one materialization serves every workbook built on it.</div></td></tr><tr><td>2</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/workbook/Exec-Revenue-Daily-bbb222?:displayNodeId=master' target='_blank' rel='noopener'>wb: Exec-Revenue-Daily-bbb222</a></td><td>master</td><td class='num'>132</td><td class='num'>9.6000</td><td class='num'>4.80</td><td class='num'>9.10</td><td><span class='pill mat'>B · Materialize</span><div class='why'>Repetitive (132 runs) and non-trivial (4.8s avg, 9.60 cr) — repeat views read a cached table instead of recomputing.</div></td></tr><tr><td>3</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/workbook/Ops-Live-Tiles-ccc333?:displayNodeId=kpi-row' target='_blank' rel='noopener'>wb: Ops-Live-Tiles-ccc333</a></td><td>kpi-row</td><td class='num'>410</td><td class='num'>5.2000</td><td class='num'>0.70</td><td class='num'>1.90</td><td><span class='pill mat'>B · Materialize</span><div class='why'>Repetitive (410 runs) and non-trivial (0.7s avg, 5.20 cr) — repeat views read a cached table instead of recomputing.</div></td></tr><tr><td>4</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/workbook/Adhoc-Cohort-Explorer-ddd444?:displayNodeId=cohort-tbl' target='_blank' rel='noopener'>wb: Adhoc-Cohort-Explorer-ddd444</a></td><td>cohort-tbl</td><td class='num'>5</td><td class='num'>1.1000</td><td class='num'>14.70</td><td class='num'>22.00</td><td><span class='pill imp'>A · Improve query</span><div class='why'>Heavy per run (14.7s avg, &gt;1 GB scanned) but only 5 run(s) — fix it in the **data model** (push calc columns upstream, declare relationships instead of cross-element Lookup, drop unused columns / pre-aggregate) so every workbook benefits. Caching an infrequent query won&#x27;t pay off.</div></td></tr><tr><td>5</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/data-model/Web-Events-DM-eee555' target='_blank' rel='noopener'>dm: Web-Events-DM-eee555</a></td><td>(workbook load)</td><td class='num'>7</td><td class='num'>0.9000</td><td class='num'>8.20</td><td class='num'>12.40</td><td><span class='pill imp'>A · Improve query</span><div class='why'>Heavy per run (8.2s avg, &gt;1 GB scanned) but only 7 run(s) — fix it in the **data model** (push calc columns upstream, declare relationships instead of cross-element Lookup, drop unused columns / pre-aggregate) so every workbook benefits. Caching an infrequent query won&#x27;t pay off.</div></td></tr><tr><td>6</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/workbook/Finance-Snapshot-hhh888?:displayNodeId=master' target='_blank' rel='noopener'>wb: Finance-Snapshot-hhh888</a></td><td>master</td><td class='num'>9</td><td class='num'>0.2100</td><td class='num'>1.10</td><td class='num'>2.00</td><td><span class='pill rev'>Monitor</span><div class='why'>Low cost &amp; latency (1.10s avg, 0.210 cr over the window). Materialization refresh would likely cost more than it saves; revisit if volume grows.</div></td></tr><tr><td>7</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/workbook/Marketing-Overview-fff666?:displayNodeId=chart-1' target='_blank' rel='noopener'>wb: Marketing-Overview-fff666</a></td><td>chart-1</td><td class='num'>64</td><td class='num'>0.1800</td><td class='num'>0.40</td><td class='num'>0.90</td><td><span class='pill rev'>Monitor</span><div class='why'>Low cost &amp; latency (0.40s avg, 0.180 cr over the window). Materialization refresh would likely cost more than it saves; revisit if volume grows.</div></td></tr><tr><td>8</td><td class='obj'><a href='https://app.sigmacomputing.com/northwind/workbook/HR-Headcount-ggg777?:displayNodeId=table-main' target='_blank' rel='noopener'>wb: HR-Headcount-ggg777</a></td><td>table-main</td><td class='num'>22</td><td class='num'>0.0900</td><td class='num'>0.30</td><td class='num'>0.70</td><td><span class='pill rev'>Monitor</span><div class='why'>Low cost &amp; latency (0.30s avg, 0.090 cr over the window). Materialization refresh would likely cost more than it saves; revisit if volume grows.</div></td></tr></tbody></table>
+
+<h2>Two ways to remediate</h2>
+<div class="card">
+<div class="opt a"><h3>Option A — Improve the query (workbook / data model)</h3>
+Pull the object's spec via the Sigma API and fix what makes a single run expensive: push heavy
+calc-column logic upstream, declare relationships instead of cross-element <code>Lookup()</code>,
+drop unused columns, pre-aggregate. Best when one run is slow or scans a lot.</div>
+<div class="opt"><h3>Option B — Materialize via the Sigma API</h3>
+Cache an element's result so repeat views read a stored table instead of recomputing — best for
+<i>repetitive</i> objects. The schedule (element + destination + cadence) is created once in the
+Sigma UI; the refresh is then fully API-driven:
+<div style="margin-top:8px"><code>materialize.py list --workbook &lt;id&gt;</code> → <code>materialize.py run --workbook &lt;id&gt; --sheet &lt;sheetId&gt;</code></div>
+<div class="note" style="margin-top:8px">Note: there is no create-schedule API endpoint today — uncreated materializations are a one-time UI step.</div></div>
+</div>
+<footer>Read-only: <code>SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY</code> + <code>QUERY_ATTRIBUTION_HISTORY</code>,
+joined on query_id; Sigma objects resolved from each query's <code>QUERY_TAG</code>. Prepared for Northwind Trading Co. (sample).</footer>
+</div></body></html>
