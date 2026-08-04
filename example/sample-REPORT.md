@@ -1,6 +1,6 @@
 # Sigma → Snowflake Materialization Opportunities
 
-_Scope: **account-wide** · last 30 days · 889 Sigma queries · 35.68 credits (~$107.04) · 8 objects · generated 2026-06-05 · **read-only**_
+_Scope: **account-wide** · last 30 days · 889 Sigma queries · 35.68 credits (~$107.04) · 8 objects · generated 2026-08-04 · **read-only**_
 
 _Found **3** materialize + **2** improve candidates. Thresholds: materialize when runs ≥ 12 AND (avg ≥ 3.0s OR ≥ 0.5 cr); $3.0/credit (provided)._
 
@@ -26,14 +26,14 @@ For every candidate above you have two levers — one reduces the cost *per run*
 **Option B — Materialize via the Sigma API.** Cache the element's result so repeat views read a stored table instead of recomputing. Best when an object is *repetitive*. Mechanics:
 
 ```
-# one-time setup (Sigma UI): open the element → ⋮ → Materialization → pick destination + cadence
 eval "$(~/.claude/skills/tableau-to-sigma/scripts/get-token.sh)"
-python3 scripts/materialize.py list --workbook <workbookId>      # find the sheetId
-python3 scripts/materialize.py run  --workbook <workbookId> --sheet <sheetId>   # refresh + poll
-# data models:  materialize.py run --datamodel <dataModelId> --sheet <sheetId>
+python3 scripts/materialize.py list   --workbook <workbookId>                          # find the elementId
+python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron "0 0 * * *"   # one-time
+python3 scripts/materialize.py run    --workbook <workbookId> --sheet <elementId>       # refresh + poll
+# data models:  materialize.py create/run --datamodel <dataModelId> --sheet <elementId>
 ```
 
-> **API note:** the Sigma API can *trigger and monitor* a materialization and *list* schedules, but the schedule itself (element + destination + cadence) is created once in the UI — there is no create-schedule endpoint today. After that one-time step the refresh is fully API-driven and schedulable.
+> **API note:** the Sigma API can *create*, *update*, *delete*, *list*, *trigger*, and *monitor* materialization schedules end to end — no UI step required. Schedule create/update/delete (cron cadence only, no destination field) are a **private-beta** REST surface; see `refs/materialization-playbook.md` for exact shapes and a live-deployment caveat before depending on them for a given org. `list`/`run`/monitor are stable and already live-verified.
 
 ## How to read this
 

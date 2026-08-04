@@ -269,16 +269,18 @@ def write_md(outdir, inv):
       "read a stored table instead of recomputing. Best when an object is *repetitive*. "
       "Mechanics:\n")
     w("```\n"
-      "# one-time setup (Sigma UI): open the element → ⋮ → Materialization → pick destination + cadence\n"
       "eval \"$(~/.claude/skills/tableau-to-sigma/scripts/get-token.sh)\"\n"
-      "python3 scripts/materialize.py list --workbook <workbookId>      # find the sheetId\n"
-      "python3 scripts/materialize.py run  --workbook <workbookId> --sheet <sheetId>   # refresh + poll\n"
-      "# data models:  materialize.py run --datamodel <dataModelId> --sheet <sheetId>\n"
+      "python3 scripts/materialize.py list   --workbook <workbookId>                          # find the elementId\n"
+      "python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron \"0 0 * * *\"   # one-time\n"
+      "python3 scripts/materialize.py run    --workbook <workbookId> --sheet <elementId>       # refresh + poll\n"
+      "# data models:  materialize.py create/run --datamodel <dataModelId> --sheet <elementId>\n"
       "```\n")
-    w("> **API note:** the Sigma API can *trigger and monitor* a materialization and *list* "
-      "schedules, but the schedule itself (element + destination + cadence) is created once in the "
-      "UI — there is no create-schedule endpoint today. After that one-time step the refresh is "
-      "fully API-driven and schedulable.\n")
+    w("> **API note:** the Sigma API can *create*, *update*, *delete*, *list*, *trigger*, and "
+      "*monitor* materialization schedules end to end — no UI step required. Schedule "
+      "create/update/delete (cron cadence only, no destination field) are a **private-beta** "
+      "REST surface; see `refs/materialization-playbook.md` for exact shapes and a "
+      "live-deployment caveat before depending on them for a given org. `list`/`run`/monitor "
+      "are stable and already live-verified.\n")
     w("## How to read this\n")
     w("- **Credits** = real attributed compute for that object's queries over the window. "
       "Multiply by your $/credit rate for dollars.\n")
