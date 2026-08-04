@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
 """
-Remediation — Option B: run/refresh a Sigma materialization via the REST API.
+Remediation — Option B: create, run, and monitor a Sigma materialization via the REST API.
 
-Sigma's API can TRIGGER and MONITOR a materialization, and LIST existing schedules.
-It cannot CREATE a schedule — that one-time setup (pick element + destination + cadence)
-is done in the Sigma UI (Element menu → Materialization). Once a schedule exists, this
-script refreshes it on demand and polls the job to completion.
+Sigma's API can LIST, CREATE, UPDATE, and DELETE materialization schedules, plus TRIGGER
+and MONITOR a one-off run. A schedule body is just a cron cadence — there is no
+destination/target field; materialization always writes back to Sigma's own internal
+cache, not a user-chosen table. (Earlier revisions of this script and the playbook
+claimed schedule creation was UI-only with no REST endpoint — that was false, retracted
+2026-08; see refs/materialization-playbook.md for the full writeup.)
 
-  list:     python3 scripts/materialize.py list --workbook <workbookId>
-  run:      python3 scripts/materialize.py run  --workbook <workbookId> --sheet <sheetId>
-            python3 scripts/materialize.py run  --datamodel <dataModelId> --sheet <sheetId>
+Beta / live-deployment caveat: create/update/delete hit a newer, element-scoped route
+(".../elements/{elementId}/materializationSchedules") that is documented in Sigma's
+public OpenAPI spec but was NOT reachable (404 "UnmatchedHandler", on every verb
+including GET) against a live test org as of 2026-08-04 — confirmed via real-vs-fake-ID
+and working-sibling-endpoint controls, not assumed. `list` and `run` (pre-existing,
+unchanged below) are unaffected and already live-verified working. Re-test create/
+update/delete before depending on them for a given org.
+
+  list:    python3 scripts/materialize.py list   --workbook <workbookId>
+           python3 scripts/materialize.py list   --datamodel <dataModelId>
+  run:     python3 scripts/materialize.py run    --workbook <workbookId>  --sheet <elementId>
+           python3 scripts/materialize.py run    --datamodel <dataModelId> --sheet <elementId>
+  create:  python3 scripts/materialize.py create --workbook <workbookId>  --sheet <elementId> --cron "0 0 * * *" [--timezone America/New_York]
+           python3 scripts/materialize.py create --datamodel <dataModelId> --sheet <elementId> --cron "0 0 * * *"
+  update:  same flags as create, against an existing schedule
+  delete:  python3 scripts/materialize.py delete --workbook <workbookId>  --sheet <elementId>
+           python3 scripts/materialize.py delete --datamodel <dataModelId> --sheet <elementId>
 
 Auth: reads SIGMA_API_TOKEN + SIGMA_BASE_URL from the environment
 (e.g. eval "$(~/.claude/skills/tableau-to-sigma/scripts/get-token.sh)").
@@ -50,6 +66,36 @@ def list_schedules(args):
     return ents
 
 
+def _schedule_path(args):
+    """Element-scoped materializationSchedules path (create/update/delete) — new Beta
+    route, NOT the same as list_schedules' unscoped workbook/data-model path above."""
+    if args.workbook:
+        return f"/v2/workbooks/{args.workbook}/elements/{args.sheet}/materializationSchedules"
+    return f"/v2/dataModels/{args.datamodel}/elements/{args.sheet}/materializationSchedules"
+
+
+def _schedule_body(args):
+    schedule = {"cronSpec": args.cron}
+    if args.timezone:
+        schedule["timezone"] = args.timezone
+    return {"schedule": schedule}
+
+
+def create_schedule(args):
+    d = api("POST", _schedule_path(args), _schedule_body(args))
+    print(json.dumps(d, indent=2))
+
+
+def update_schedule(args):
+    d = api("PATCH", _schedule_path(args), _schedule_body(args))
+    print(json.dumps(d, indent=2))
+
+
+def delete_schedule(args):
+    d = api("DELETE", _schedule_path(args))
+    print(json.dumps(d, indent=2) if d else "deleted")
+
+
 def poll(get_path, job_id, timeout=300):
     print(f"  triggered materializationId={job_id} — polling...", file=sys.stderr)
     t0 = time.time()
@@ -85,16 +131,26 @@ def main():
         sys.exit('Set creds: eval "$(~/.claude/skills/tableau-to-sigma/scripts/get-token.sh)"')
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("list", "run"):
+    for name in ("list", "run", "create", "update", "delete"):
         s = sub.add_parser(name)
         s.add_argument("--workbook")
         s.add_argument("--datamodel")
-        if name == "run":
-            s.add_argument("--sheet", required=True, help="sheetId from `list`")
+        if name in ("run", "create", "update", "delete"):
+            s.add_argument("--sheet", required=True, help="elementId (sheetId from `list`)")
+        if name in ("create", "update"):
+            s.add_argument("--cron", required=True, help='cron expression, e.g. "0 0 * * *"')
+            s.add_argument("--timezone", help="IANA timezone, e.g. America/New_York (optional)")
     a = ap.parse_args()
     if not (a.workbook or a.datamodel):
         sys.exit("pass --workbook <id> or --datamodel <id>")
-    (list_schedules if a.cmd == "list" else run)(a)
+    dispatch = {
+        "list": list_schedules,
+        "run": run,
+        "create": create_schedule,
+        "update": update_schedule,
+        "delete": delete_schedule,
+    }
+    dispatch[a.cmd](a)
 
 
 if __name__ == "__main__":

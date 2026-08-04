@@ -66,15 +66,16 @@ Persist the answers in `advisor-config.json` (see `advisor-config.example.json`)
    - **A — Improve the query** in the workbook/data model (push calc logic upstream,
      declare relationships, drop unused columns). Pull/edit specs via the Sigma API;
      pairs with `sigma-data-model-assessment`.
-   - **B — Materialize via API** — `scripts/materialize.py list|run`. The schedule is
-     created once in the Sigma UI (no create-schedule endpoint); the refresh is then
-     fully API-driven.
+   - **B — Materialize via API** — `scripts/materialize.py list|create|update|delete|run`.
+     Schedule create/update/delete are Beta REST endpoints (cron cadence only, no
+     destination field) — see `refs/materialization-playbook.md` for exact shapes and a
+     live-deployment caveat; `list`/`run` are pre-existing and unaffected.
 
 ## Scripts
 | Script | Purpose |
 |---|---|
 | `scripts/analyze.py` | Snowflake credit attribution → ranked candidates → `inventory.json` + `REPORT.md` |
-| `scripts/materialize.py` | `list` / `run` (trigger + poll) a Sigma materialization via REST |
+| `scripts/materialize.py` | `list` / `create` / `update` / `delete` (schedule CRUD, Beta) / `run` (trigger + poll) a Sigma materialization via REST |
 | `scripts/render-html.py` | `inventory.json` → customer-facing `report.html` |
 
 Flags (`analyze.py`): `--conn`, `--days`, `--org <slug>` (scope to one Sigma org; omit
@@ -87,7 +88,11 @@ never leaves the account). The Sigma-side mapping and materialization actions ne
 Sigma REST API, so the end-to-end loop lives here.
 
 ## Open work
-- **Materialization schedule creation** is UI-only today (API can list/run/monitor).
+- **Materialization schedule create/update/delete** are Beta REST endpoints
+  (`scripts/materialize.py create|update|delete`) — live-verified as not yet reachable
+  on at least one test org as of 2026-08-04 (404 `errorcause: UnmatchedHandler` on every
+  verb tried); re-check before depending on them for a given org.
+  `list`/`run`/monitor remain fully live-verified working.
 - ID resolution: `analyze.py` reports the `sourceUrl`; an optional `--resolve` pass could
   turn each candidate into a ready-to-run `materialize.py` command (workbookId + sheetId).
 - `--consumers`-style fan-out: for a data-model candidate, count how many workbooks
