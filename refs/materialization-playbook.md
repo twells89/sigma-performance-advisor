@@ -36,8 +36,13 @@ How the advisor turns a Snowflake cost signal into a recommendation. Two levers:
 **Retracted 2026-08:** earlier revisions of this playbook (and `materialize.py`'s module
 docstring) claimed *"Create schedule: Sigma UI only … No create-schedule REST endpoint as
 of 2026-06."* That was false — Sigma's public OpenAPI spec documents full create/update/
-delete for materialization schedules (Beta). Read the live-deployment caveat below before
-relying on it against a given org.
+delete for materialization schedules (private beta), and the exact paths/body shape below
+are independently confirmed against Sigma's own help-center reference pages for these 4
+endpoints (fetched directly, not just the OpenAPI asset) — those pages explicitly label
+this "a private beta feature." Prefer Sigma's stable `help.sigmacomputing.com/reference/`
+per-endpoint pages over any pinned OpenAPI JSON asset URL for future citations here — the
+latter has already rotated/gone stale twice in this doc set's history. Read the
+live-deployment caveat below before relying on this against a given org.
 
 - **List** (pre-existing, unchanged — the two calls below are correct as written, do NOT
   "fix" them to match the create/update/delete shape below):
@@ -47,7 +52,7 @@ relying on it against a given org.
     (unscoped — whole data model, **camelCase** path).
   - Both return entries shaped `{sheetId, elementName, schedule: {cronSpec, timezone},
     paused}`.
-- **Create / Update / Delete** (Beta, new) — nested under the *element*, and
+- **Create / Update / Delete** (private beta, new) — nested under the *element*, and
   **camelCase** (`materializationSchedules`, no hyphen) on **both** sides. This is the
   key asymmetry to know about: on the workbook side, LIST stays unscoped+hyphenated
   (above) while create/update/delete are element-scoped+camelCase — two different paths
@@ -71,10 +76,12 @@ relying on it against a given org.
     data-model side — returned `404` with header `errorcause: UnmatchedHandler` against
     a live test org, for both a real element ID and a fabricated one (identical
     response), while a known-good sibling endpoint returns a proper `400` JSON error for
-    a malformed ID rather than a bare `404`. Read this as *"documented in the spec,
-    Beta, rollout not yet visible on the org tested"* — not *"confirmed broken forever."*
-    Re-test before depending on create/update/delete for a given org; `list`/`run`/
-    `monitor` are unaffected and already live-verified working.
+    a malformed ID rather than a bare `404`. The shape above is confirmed correct
+    (matches Sigma's own live help-center reference pages) — this 404 is a rollout gap
+    on the org tested, not a wrong path/body. Read it as *"correctly documented,
+    private beta, rollout not yet visible on the org tested"* — not *"confirmed broken
+    forever."* Re-test before depending on create/update/delete for a given org;
+    `list`/`run`/`monitor` are unaffected and already live-verified working.
 - **Run/refresh** (pre-existing, unchanged): `POST /v2/workbooks/{id}/materializations
   {sheetId}` or `POST /v2/dataModels/{id}:materialize {sheetId}` → returns
   `materializationId`.

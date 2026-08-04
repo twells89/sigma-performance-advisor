@@ -9,13 +9,15 @@ cache, not a user-chosen table. (Earlier revisions of this script and the playbo
 claimed schedule creation was UI-only with no REST endpoint — that was false, retracted
 2026-08; see refs/materialization-playbook.md for the full writeup.)
 
-Beta / live-deployment caveat: create/update/delete hit a newer, element-scoped route
-(".../elements/{elementId}/materializationSchedules") that is documented in Sigma's
-public OpenAPI spec but was NOT reachable (404 "UnmatchedHandler", on every verb
-including GET) against a live test org as of 2026-08-04 — confirmed via real-vs-fake-ID
-and working-sibling-endpoint controls, not assumed. `list` and `run` (pre-existing,
-unchanged below) are unaffected and already live-verified working. Re-test create/
-update/delete before depending on them for a given org.
+Private-beta / live-deployment caveat: create/update/delete hit a newer, element-scoped
+route (".../elements/{elementId}/materializationSchedules") whose path and body shape
+are confirmed correct against Sigma's own help-center reference pages (which label this
+"a private beta feature"), but the route was NOT reachable (404 "UnmatchedHandler", on
+every verb including GET) against a live test org as of 2026-08-04 — confirmed via
+real-vs-fake-ID and working-sibling-endpoint controls, not assumed; a rollout gap on that
+org, not a wrong shape. `list` and `run` (pre-existing, unchanged below) are unaffected
+and already live-verified working. Re-test create/update/delete before depending on them
+for a given org.
 
   list:    python3 scripts/materialize.py list   --workbook <workbookId>
            python3 scripts/materialize.py list   --datamodel <dataModelId>

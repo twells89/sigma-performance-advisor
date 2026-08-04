@@ -88,11 +88,12 @@ never leaves the account). The Sigma-side mapping and materialization actions ne
 Sigma REST API, so the end-to-end loop lives here.
 
 ## Open work
-- **Materialization schedule create/update/delete** are Beta REST endpoints
-  (`scripts/materialize.py create|update|delete`) — live-verified as not yet reachable
-  on at least one test org as of 2026-08-04 (404 `errorcause: UnmatchedHandler` on every
-  verb tried); re-check before depending on them for a given org.
-  `list`/`run`/monitor remain fully live-verified working.
+- **Materialization schedule create/update/delete** are private-beta REST endpoints
+  (`scripts/materialize.py create|update|delete`) — path/body shape confirmed correct
+  against Sigma's own help-center reference pages, but live-verified as not yet
+  reachable on at least one test org as of 2026-08-04 (404 `errorcause: UnmatchedHandler`
+  on every verb tried, a rollout gap not a wrong shape); re-check before depending on
+  them for a given org. `list`/`run`/monitor remain fully live-verified working.
 - ID resolution: `analyze.py` reports the `sourceUrl`; an optional `--resolve` pass could
   turn each candidate into a ready-to-run `materialize.py` command (workbookId + sheetId).
 - `--consumers`-style fan-out: for a data-model candidate, count how many workbooks
