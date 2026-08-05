@@ -33,14 +33,81 @@ How the advisor turns a Snowflake cost signal into a recommendation. Two levers:
 - Often do both: improve the underlying data-model element, then materialize it.
 
 ## Materialization mechanics (Sigma API)
-- **Create schedule:** Sigma UI only — element ⋮ → *Materialization* → destination + cadence.
-  (No create-schedule REST endpoint as of 2026-06.)
-- **List:** `GET /v2/workbooks/{id}/materialization-schedules` →
-  `GET /v2/dataModels/{id}/materializationSchedules`. Returns `sheetId`, `elementName`,
-  `schedule.cronSpec`, `paused`.
-- **Run/refresh:** `POST /v2/workbooks/{id}/materializations {sheetId}` or
-  `POST /v2/dataModels/{id}:materialize {sheetId}` → returns `materializationId`.
-- **Monitor:** `GET .../materializations/{materializationId}`.
+**Retracted 2026-08:** earlier revisions of this playbook (and `materialize.py`'s module
+docstring) claimed *"Create schedule: Sigma UI only … No create-schedule REST endpoint as
+of 2026-06."* That was false — Sigma documents full create/update/delete for
+materialization schedules (private beta), and the exact paths/body shape below are
+confirmed directly against Sigma's own live help-center reference pages (fetched
+2026-08-04), not just the (since-rotated) OpenAPI asset:
+- https://help.sigmacomputing.com/reference/create-materialization-schedule
+- https://help.sigmacomputing.com/reference/patch-materialization-schedule
+- https://help.sigmacomputing.com/reference/delete-materialization-schedule
+- https://help.sigmacomputing.com/reference/create-data-model-materialization-schedule
+- https://help.sigmacomputing.com/reference/patch-data-model-materialization-schedule
+- https://help.sigmacomputing.com/reference/delete-data-model-materialization-schedule
+
+Each page states, verbatim: *"This documentation describes a private beta feature and is
+subject to the [Beta features](/docs/sigma-product-releases#beta-features) disclaimer."*
+— hence "private beta" here, not generic "Beta." The pages also confirm two behavioral
+details worth knowing: **an element can have at most one materialization schedule**
+(hence no separate schedule-id anywhere below), and **create starts an immediate
+materialization run**, using the latest published version, at creation time — it isn't
+purely a future-dated cron registration. Prefer these stable
+`help.sigmacomputing.com/reference/` per-endpoint pages over any pinned OpenAPI JSON
+asset URL for future citations here — the latter has already rotated/gone stale twice in
+this doc set's history. Read the live-deployment caveat below before relying on this
+against a given org.
+
+- **List** (pre-existing, unchanged — the two calls below are correct as written, do NOT
+  "fix" them to match the create/update/delete shape below):
+  - Workbook element: `GET /v2/workbooks/{workbookId}/materialization-schedules`
+    (unscoped — whole workbook, no `elementId` segment, **hyphenated** path).
+  - Data-model element: `GET /v2/dataModels/{dataModelId}/materializationSchedules`
+    (unscoped — whole data model, **camelCase** path).
+  - Both return entries shaped `{sheetId, elementName, schedule: {cronSpec, timezone},
+    paused}`.
+- **Create / Update / Delete** (private beta, new) — nested under the *element*, and
+  **camelCase** (`materializationSchedules`, no hyphen) on **both** sides. This is the
+  key asymmetry to know about: on the workbook side, LIST stays unscoped+hyphenated
+  (above) while create/update/delete are element-scoped+camelCase — two different paths
+  for the same feature area, neither one a bug:
+  - Workbook element: `POST` / `PATCH` / `DELETE
+    /v2/workbooks/{workbookId}/elements/{elementId}/materializationSchedules`
+  - Data-model element: `GET` / `POST` / `PATCH` / `DELETE
+    /v2/dataModels/{dataModelId}/elements/{elementId}/materializationSchedules` — the
+    data-model side additionally exposes `GET` at this nested path; the workbook side
+    does not (use the unscoped workbook list above instead).
+  - **Body — identical for create and update, both element types:**
+    `{"schedule": {"cronSpec": "<cron expression>", "timezone": "<IANA tz, optional>"}}`.
+    Only `cronSpec` is required. **There is no destination/target field** — the UI's
+    "pick element + destination + cadence" framing overstates what the API needs;
+    materialization always writes back to Sigma's own internal cache, never a
+    user-chosen table.
+  - `DELETE` takes no body and hits the same element-scoped path — one schedule per
+    element, no separate schedule-id to track.
+  - **Live-deployment caveat (verified 2026-08-04):** all three nested create/update/
+    delete endpoints — on *every* verb tried, including read-only `GET` on the
+    data-model side — returned `404` with header `errorcause: UnmatchedHandler` against
+    a live test org, for both a real element ID and a fabricated one (identical
+    response), while a known-good sibling endpoint returns a proper `400` JSON error for
+    a malformed ID rather than a bare `404`. The *path and body shape* above are
+    confirmed correct against the citations up top, regardless of this finding.
+    **However, a bare 404 has two possible explanations, and this test could only rule
+    out one of them:** either (a) a rollout gap — this org's cluster doesn't yet expose
+    the private-beta route, which the real-vs-fake-ID and sibling-endpoint controls
+    support, or (b) the specific `elementId` used was wrong for this route — every ID
+    tried came from a `GET .../elements` listing, not from an actual `list_schedules`
+    `sheetId` value (no schedule existed yet to list), so the assumption that a
+    `list`-reported `sheetId` is interchangeable with this route's `{elementId}` path
+    segment was never itself exercised against a *working* route. Read this as
+    *"correctly documented, private beta, not confirmed reachable on the org
+    tested — for either reason"* — not *"confirmed broken forever."* Re-test with a
+    freshly-confirmed element ID before depending on create/update/delete for a given
+    org; `list`/`run`/`monitor` are unaffected and already live-verified working.
+- **Run/refresh** (pre-existing, unchanged): `POST /v2/workbooks/{id}/materializations
+  {sheetId}` or `POST /v2/dataModels/{id}:materialize {sheetId}` → returns
+  `materializationId`.
+- **Monitor** (pre-existing, unchanged): `GET .../materializations/{materializationId}`.
 
 ## Cost math
 `monthly_savings ≈ (credits_in_window / window_days × 30) × fraction_removed × $/credit`.

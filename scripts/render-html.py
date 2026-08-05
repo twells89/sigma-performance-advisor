@@ -96,10 +96,10 @@ calc-column logic upstream, declare relationships instead of cross-element <code
 drop unused columns, pre-aggregate. Best when one run is slow or scans a lot.</div>
 <div class="opt"><h3>Option B — Materialize via the Sigma API</h3>
 Cache an element's result so repeat views read a stored table instead of recomputing — best for
-<i>repetitive</i> objects. The schedule (element + destination + cadence) is created once in the
-Sigma UI; the refresh is then fully API-driven:
-<div style="margin-top:8px"><code>materialize.py list --workbook &lt;id&gt;</code> → <code>materialize.py run --workbook &lt;id&gt; --sheet &lt;sheetId&gt;</code></div>
-<div class="note" style="margin-top:8px">Note: there is no create-schedule API endpoint today — uncreated materializations are a one-time UI step.</div></div>
+<i>repetitive</i> objects. Create, update, and delete a schedule's cron cadence (no destination
+field) end to end via the API, then trigger/monitor refreshes:
+<div style="margin-top:8px"><code>materialize.py list --workbook &lt;id&gt;</code> → <code>materialize.py create --workbook &lt;id&gt; --sheet &lt;elementId&gt; --cron "0 0 * * *"</code> → <code>materialize.py run --workbook &lt;id&gt; --sheet &lt;elementId&gt;</code></div>
+<div class="note" style="margin-top:8px">Note: schedule create/update/delete are a private-beta REST surface — see refs/materialization-playbook.md for exact shapes and a live-deployment caveat.</div></div>
 </div>
 <footer>Read-only: <code>SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY</code> + <code>QUERY_ATTRIBUTION_HISTORY</code>,
 joined on query_id; Sigma objects resolved from each query's <code>QUERY_TAG</code>. Prepared for {customer}.</footer>

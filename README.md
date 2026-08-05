@@ -33,9 +33,11 @@ render-html.py ─► report.html         materialize.py ─► trigger/monitor 
   pre-aggregate. Fix it once in the data model and every workbook benefits. Best when a
   single run is slow or scans a lot.
 - **B — Materialize via the Sigma API**: cache an element's result so repeat views read a
-  stored table. Best when an object is *repetitive*. The schedule is created once in the
-  Sigma UI (no create-schedule API endpoint); the **refresh is then fully API-driven** —
-  `materialize.py run` triggers and polls it.
+  stored table. Best when an object is *repetitive*. `materialize.py create` / `update` /
+  `delete` manage a schedule's cron cadence end to end via the API (private beta — see
+  [`refs/materialization-playbook.md`](refs/materialization-playbook.md) for exact shapes
+  and a live-deployment caveat); `materialize.py run` triggers and polls an on-demand
+  refresh.
 
 An object is only flagged **Materialize** when it's genuinely repetitive **and** non-trivial
 (`runs ≥ N` **and** (`avg ≥ S sec` **or** `≥ C credits`)). Caching a fast, cheap query costs
@@ -65,8 +67,10 @@ python3 scripts/render-html.py --inv out/inventory.json --out out/report.html --
 
 # remediate (opt-in) — needs Sigma REST creds:
 eval "$(/path/to/get-token.sh)"          # sets SIGMA_API_TOKEN + SIGMA_BASE_URL
-python3 scripts/materialize.py list --workbook <workbookId>          # find sheetId
-python3 scripts/materialize.py run  --workbook <workbookId> --sheet <sheetId>
+python3 scripts/materialize.py list   --workbook <workbookId>                        # find the elementId
+python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron "0 0 * * *"   # one-time, private beta
+python3 scripts/materialize.py run    --workbook <workbookId> --sheet <elementId>    # refresh + poll
+python3 scripts/materialize.py delete --workbook <workbookId> --sheet <elementId>    # destructive, confirms unless --yes
 ```
 
 ## Running in Snowflake / Cortex Code
@@ -88,16 +92,21 @@ mapping/remediation runs wherever you have the Sigma API.
 | File | Purpose |
 |---|---|
 | `scripts/analyze.py` | credit attribution → ranked candidates → `inventory.json` + `REPORT.md` (`--from-rows` for the Cortex path) |
-| `scripts/materialize.py` | `list` / `run` (trigger + poll) a Sigma materialization via REST |
+| `scripts/materialize.py` | `list` / `create` / `update` / `delete` (schedule CRUD, private beta) / `run` (trigger + poll) a Sigma materialization via REST |
 | `scripts/render-html.py` | `inventory.json` → customer-facing `report.html` |
 | `sql/sigma_cost.sql` | the attribution query, standalone for Snowflake/Cortex Code |
 | `example/make-sample.py` | regenerate the synthetic example |
 
 ## Privacy & safety
-Read-only by construction; `materialize.py run` is the only state-changing action and only
-when you invoke it. See [`PRIVACY.md`](PRIVACY.md). The committed [`example/`](example/) is
-**fully synthetic** (fictional "Northwind Trading Co.") — no real data. Real outputs are
-customer-confidential; `.gitignore` keeps `*-out/` and creds out of git.
+Analysis (`analyze.py`, `render-html.py`) is read-only by construction. Remediation is
+explicit and opt-in: `materialize.py create` / `update` / `delete` manage a schedule's cron
+cadence (private beta) and `materialize.py run` triggers an on-demand refresh — all four
+only act when you invoke them with a specific `--sheet`/`--workbook`/`--datamodel`.
+`delete` is destructive (cancels all future runs, no undo) and prompts for confirmation
+unless you pass `--yes`. See [`PRIVACY.md`](PRIVACY.md). The committed
+[`example/`](example/) is **fully synthetic** (fictional "Northwind Trading Co.") — no real
+data. Real outputs are customer-confidential; `.gitignore` keeps `*-out/` and creds out of
+git.
 
 ## License
 MIT — see [`LICENSE`](LICENSE).

@@ -66,15 +66,17 @@ Persist the answers in `advisor-config.json` (see `advisor-config.example.json`)
    - **A — Improve the query** in the workbook/data model (push calc logic upstream,
      declare relationships, drop unused columns). Pull/edit specs via the Sigma API;
      pairs with `sigma-data-model-assessment`.
-   - **B — Materialize via API** — `scripts/materialize.py list|run`. The schedule is
-     created once in the Sigma UI (no create-schedule endpoint); the refresh is then
-     fully API-driven.
+   - **B — Materialize via API** — `scripts/materialize.py list|create|update|delete|run`.
+     Schedule create/update/delete are private-beta REST endpoints (cron cadence only, no
+     destination field) — see `refs/materialization-playbook.md` for exact shapes and a
+     live-deployment caveat; `list`/`run` are pre-existing and unaffected. `delete` is
+     destructive and prompts for confirmation unless `--yes` is passed.
 
 ## Scripts
 | Script | Purpose |
 |---|---|
 | `scripts/analyze.py` | Snowflake credit attribution → ranked candidates → `inventory.json` + `REPORT.md` |
-| `scripts/materialize.py` | `list` / `run` (trigger + poll) a Sigma materialization via REST |
+| `scripts/materialize.py` | `list` / `create` / `update` / `delete` (schedule CRUD, private beta) / `run` (trigger + poll) a Sigma materialization via REST |
 | `scripts/render-html.py` | `inventory.json` → customer-facing `report.html` |
 
 Flags (`analyze.py`): `--conn`, `--days`, `--org <slug>` (scope to one Sigma org; omit
@@ -87,7 +89,15 @@ never leaves the account). The Sigma-side mapping and materialization actions ne
 Sigma REST API, so the end-to-end loop lives here.
 
 ## Open work
-- **Materialization schedule creation** is UI-only today (API can list/run/monitor).
+- **Materialization schedule create/update/delete** are private-beta REST endpoints
+  (`scripts/materialize.py create|update|delete`) — path/body shape confirmed correct
+  against Sigma's own live help-center reference pages (cited in
+  `refs/materialization-playbook.md` and the `materialize.py` docstring), but
+  live-verified as not yet reachable on at least one test org as of 2026-08-04 (404
+  `errorcause: UnmatchedHandler` on every verb tried). That 404 could mean either a
+  rollout gap on that org's cluster *or* a bad element/workbook/data-model ID — re-check
+  the ID with `list` before depending on create/update/delete for a given org.
+  `list`/`run`/monitor remain fully live-verified working.
 - ID resolution: `analyze.py` reports the `sourceUrl`; an optional `--resolve` pass could
   turn each candidate into a ready-to-run `materialize.py` command (workbookId + sheetId).
 - `--consumers`-style fan-out: for a data-model candidate, count how many workbooks
