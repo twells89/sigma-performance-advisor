@@ -1,12 +1,12 @@
-# Sigma Materialization Advisor
+# Sigma Performance & Cost Advisor
 
-Find the Sigma workbooks, data models, and elements driving the most **Snowflake
-compute**, quantify them in **dollars**, and act — either **improve the query** in the
-data model or **materialize** it via the Sigma API. Read-only analysis; remediation is
+Find the Sigma workloads driving Snowflake cost, measure whether existing
+materializations are actually serving reads, and recommend the least expensive option
+that still meets latency and freshness goals. Analysis is read-only; remediation is
 explicit and opt-in.
 
-It answers: *"Which of our Sigma dashboards are actually costing us money in Snowflake,
-and what's the highest-leverage fix for each?"*
+It answers: *"How do we keep Sigma fast while spending less—and which materializations
+should we keep, retune, investigate, remove, or add?"*
 
 > Works as a [Claude Code / Agent skill](https://docs.claude.com/en/docs/claude-code)
 > (via `SKILL.md`) **and** as a standalone CLI (Python 3 stdlib + the `snow` CLI). The
@@ -17,37 +17,31 @@ and what's the highest-leverage fix for each?"*
 ## How it works
 
 Sigma stamps every warehouse query's `QUERY_TAG` with `Sigma Σ {sourceUrl, email, kind}`.
-Snowflake's `QUERY_ATTRIBUTION_HISTORY` gives **real compute credits per query**. Join the
-two and you can attribute Snowflake cost to the exact Sigma object that caused it.
+The advisor joins that metadata to:
 
-```
-analyze.py ─► SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY  ⨝  QUERY_ATTRIBUTION_HISTORY
-           ─► parse QUERY_TAG → org / workbook|data-model / element
-           ─► rank candidates, convert credits→$  → inventory.json + REPORT.md
-render-html.py ─► report.html         materialize.py ─► trigger/monitor via Sigma API
-```
+- `QUERY_ATTRIBUTION_HISTORY` for real per-query compute credits;
+- `ACCESS_HISTORY` to match materialization-created objects to subsequent reads;
+- `WAREHOUSE_METERING_HISTORY` for warehouse idle context; and
+- Sigma schedules, elements, and lineage for control and dependency safeguards.
 
-## Two remediation levers (per candidate)
-- **A — Improve the query** *(in the data model)*: push heavy calc columns upstream,
-  declare relationships instead of cross-element `Lookup()`, drop unused columns,
-  pre-aggregate. Fix it once in the data model and every workbook benefits. Best when a
-  single run is slow or scans a lot.
-- **B — Materialize via the Sigma API**: cache an element's result so repeat views read a
-  stored table. Best when an object is *repetitive*. `materialize.py create` / `update` /
-  `delete` manage a schedule's cron cadence end to end via the API (private beta — see
-  [`refs/materialization-playbook.md`](refs/materialization-playbook.md) for exact shapes
-  and a live-deployment caveat); `materialize.py run` triggers and polls an on-demand
-  refresh.
+Every opportunity includes evidence, confidence, performance impact, savings range, and
+a validation step. A materialization is never marked safe to remove from refresh cost
+alone; removal requires a measured no-materialization baseline.
 
-An object is only flagged **Materialize** when it's genuinely repetitive **and** non-trivial
-(`runs ≥ N` **and** (`avg ≥ S sec` **or** `≥ C credits`)). Caching a fast, cheap query costs
-more to refresh than it saves — so most objects correctly come back **Monitor**.
+## Decisions
+- **Keep** — observed reads justify refresh cost and cached p95 meets the target.
+- **Retune** — useful, but refreshing more often than usage/source updates require.
+- **Investigate** — low observed utilization, control risk, or incomplete lineage.
+- **Remove candidate** — only after a measured counterfactual stays within the latency SLO.
+- **Add candidate** — repeated live workload where refresh TCO is likely lower.
+- **Optimize query/model** — lower the per-run floor before adding more caching.
 
-## Intake (ask before the first run)
-Thresholds depend on the customer's economics/SLAs. The skill asks:
-1. **How fresh must dashboards be?** (real-time → materialization mostly off the table)
-2. **Primary goal?** cut cost / speed up dashboards / both → sets ranking weight (`--goal`)
-3. **How aggressive?** conservative / balanced / aggressive → sets the candidate bar
+## Intake
+Configure the decision constraints in `advisor-config.json`:
+1. **Latency SLO** and acceptable slowdown.
+2. **Freshness requirement** (real-time disables add-materialization advice).
+3. **Primary goal**: cost, latency, or performance per dollar.
+4. **Minimum monthly savings** and utilization thresholds.
 
 **$/credit is auto-detected** from `SNOWFLAKE.ORGANIZATION_USAGE` (effective rate); only
 asked if that's unavailable. Persist answers in `advisor-config.json` (see
@@ -59,8 +53,12 @@ with read access to `SNOWFLAKE.ACCOUNT_USAGE`.
 
 ```bash
 # analyze (read-only)
-python3 scripts/analyze.py --conn <snow-conn> --days 30 --goal both --out out
-#   add --org <slug> to scope to one Sigma org; thresholds: --mat-min-runs / -avg-sec / -credits
+python3 scripts/analyze.py --conn <snow-conn> --config advisor-config.json --out out
+
+# Optional Sigma enrichment (schedules, controls, lineage)
+export SIGMA_BASE_URL=https://<region-api-host>
+export SIGMA_CLIENT_ID=... SIGMA_CLIENT_SECRET=...
+python3 scripts/enrich.py --inv out/inventory.json
 
 # report
 python3 scripts/render-html.py --inv out/inventory.json --out out/report.html --customer "Acme"
@@ -68,7 +66,7 @@ python3 scripts/render-html.py --inv out/inventory.json --out out/report.html --
 # remediate (opt-in) — needs Sigma REST creds:
 eval "$(/path/to/get-token.sh)"          # sets SIGMA_API_TOKEN + SIGMA_BASE_URL
 python3 scripts/materialize.py list   --workbook <workbookId>                        # find the elementId
-python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron "0 0 * * *"   # one-time, private beta
+python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron "0 0 * * *" --dry-run
 python3 scripts/materialize.py run    --workbook <workbookId> --sheet <elementId>    # refresh + poll
 python3 scripts/materialize.py delete --workbook <workbookId> --sheet <elementId>    # destructive, confirms unless --yes
 ```
@@ -77,30 +75,33 @@ python3 scripts/materialize.py delete --workbook <workbookId> --sheet <elementId
 The cost analysis is portable SQL — no external CLI needed, and the data never leaves the
 account:
 
-1. Open `sql/sigma_cost.sql` in a Snowflake worksheet **or Cortex Code**, set the three
-   `SET` vars (`days`, `org`, `min_runs`), and run it.
-2. (Optional, to get the formatted report/HTML) export the result rows as JSON and render:
+1. Run the four files in `sql/`, setting their `days`, `org`, and `min_runs` variables.
+2. Export the result sets into one JSON bundle:
+   `{"workload":[],"coverage":[],"materializations":[],"warehouses":[]}`.
+3. Render the bundle:
    ```bash
-   python3 scripts/analyze.py --from-rows rows.json --goal both --out out
+   python3 scripts/analyze.py --from-rows bundle.json --goal performance_per_dollar --out out
    python3 scripts/render-html.py --inv out/inventory.json --out out/report.html --customer "Acme"
    ```
 
-So the heavy lifting can stay fully in-warehouse (Cortex Code), while the Sigma-side
-mapping/remediation runs wherever you have the Sigma API.
+The heavy lifting stays in-warehouse while Sigma enrichment runs only where REST access
+is available.
 
 ## Scripts
 | File | Purpose |
 |---|---|
-| `scripts/analyze.py` | credit attribution → ranked candidates → `inventory.json` + `REPORT.md` (`--from-rows` for the Cortex path) |
-| `scripts/materialize.py` | `list` / `create` / `update` / `delete` (schedule CRUD, private beta) / `run` (trigger + poll) a Sigma materialization via REST |
+| `scripts/analyze.py` | cost/performance evidence → v2 inventory + Markdown report |
+| `scripts/cost_model.py` | pure keep/retune/investigate/remove/add decision engine |
+| `scripts/enrich.py` | read-only Sigma schedule/control/lineage enrichment |
+| `scripts/materialize.py` | explicit schedule CRUD and refresh actions (`--dry-run`) |
 | `scripts/render-html.py` | `inventory.json` → customer-facing `report.html` |
-| `sql/sigma_cost.sql` | the attribution query, standalone for Snowflake/Cortex Code |
+| `sql/*.sql` | workload, coverage, materialization ROI, and warehouse context |
 | `example/make-sample.py` | regenerate the synthetic example |
 
 ## Privacy & safety
-Analysis (`analyze.py`, `render-html.py`) is read-only by construction. Remediation is
-explicit and opt-in: `materialize.py create` / `update` / `delete` manage a schedule's cron
-cadence (private beta) and `materialize.py run` triggers an on-demand refresh — all four
+Analysis (`analyze.py`, `enrich.py`, `render-html.py`) is read-only by construction.
+Remediation is explicit and opt-in: `materialize.py create` / `update` / `delete` manage
+a schedule's cron cadence and `materialize.py run` triggers an on-demand refresh — all four
 only act when you invoke them with a specific `--sheet`/`--workbook`/`--datamodel`.
 `delete` is destructive (cancels all future runs, no undo) and prompts for confirmation
 unless you pass `--yes`. See [`PRIVACY.md`](PRIVACY.md). The committed

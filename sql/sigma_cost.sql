@@ -9,16 +9,20 @@ set org      = '';     -- '' = account-wide; else a Sigma org slug, e.g. 'acme'
 set min_runs = 2;      -- ignore objects run fewer than this many times
 
 with qh as (
-  select query_id, total_elapsed_time, bytes_scanned, partitions_scanned, partitions_total,
-         try_parse_json(regexp_substr(query_tag, '\\{.*\\}')) as j
+  select query_id, query_parameterized_hash, total_elapsed_time, bytes_scanned,
+         bytes_spilled_to_local_storage, bytes_spilled_to_remote_storage,
+         queued_overload_time, partitions_scanned, partitions_total,
+         iff(position('{' in query_tag) > 0,
+             try_parse_json(substr(query_tag, position('{' in query_tag))), null) as j
   from snowflake.account_usage.query_history
   where start_time > dateadd('day', -$days, current_timestamp())
     and query_tag ilike 'Sigma %'
     and execution_status = 'SUCCESS'
-    and query_type = 'SELECT'
 ),
 s as (
-  select query_id, total_elapsed_time, bytes_scanned, partitions_scanned, partitions_total,
+  select query_id, query_parameterized_hash, total_elapsed_time, bytes_scanned,
+         bytes_spilled_to_local_storage, bytes_spilled_to_remote_storage,
+         queued_overload_time, partitions_scanned, partitions_total,
          j:"sourceUrl"::string  as source_url,
          j:"kind"::string       as kind,
          split_part(j:"sourceUrl"::string, '/', 4) as org,
@@ -26,10 +30,12 @@ s as (
          regexp_substr(j:"sourceUrl"::string, '[?&]:displayNodeId=([^&]+)', 1, 1, 'e', 1) as element
   from qh
   where j:"sourceUrl" is not null
+    and coalesce(j:"kind"::string, '') <> 'materialization'
     and ($org = '' or j:"sourceUrl"::string ilike '%/' || $org || '/%')
 ),
 att as (
-  select query_id, sum(credits_attributed_compute) as credits
+  select query_id, sum(credits_attributed_compute) as credits,
+         sum(credits_used_query_acceleration) as qas_credits
   from snowflake.account_usage.query_attribution_history
   where start_time > dateadd('day', -$days, current_timestamp())
   group by 1
@@ -40,10 +46,20 @@ select
   coalesce(s.element, '(workbook load)')      as element,
   count(*)                                    as runs,
   round(sum(coalesce(att.credits, 0)), 4)     as credits,
+  round(sum(coalesce(att.qas_credits, 0)), 4) as qas_credits,
   round(avg(s.total_elapsed_time)/1000.0, 2)  as avg_sec,
+  round(approx_percentile(s.total_elapsed_time/1000.0, .5), 2) as p50_sec,
+  round(approx_percentile(s.total_elapsed_time/1000.0, .95), 2) as p95_sec,
   round(max(s.total_elapsed_time)/1000.0, 2)  as max_sec,
   round(sum(s.total_elapsed_time)/1000.0, 1)  as total_sec,
+  sum(s.bytes_scanned)                        as bytes_scanned,
   max(s.bytes_scanned)                        as max_bytes,
+  sum(coalesce(s.bytes_spilled_to_local_storage,0) +
+      coalesce(s.bytes_spilled_to_remote_storage,0)) as bytes_spilled,
+  round(sum(coalesce(s.queued_overload_time,0))/1000.0, 1) as queued_overload_sec,
+  round(sum(s.partitions_scanned)/nullif(sum(s.partitions_total),0)*100, 2)
+                                              as partition_scan_pct,
+  count(distinct s.query_parameterized_hash)  as query_patterns,
   max(s.source_url)                           as sample_url
 from s
 left join att using (query_id)
