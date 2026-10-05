@@ -25,7 +25,8 @@ with tagged as (
     and ($org = '' or j:"sourceUrl"::string ilike '%/' || $org || '/%')
 ),
 att as (
-  select query_id, sum(credits_attributed_compute) credits
+  select query_id, sum(credits_attributed_compute) credits,
+         sum(credits_used_query_acceleration) qas_credits
   from snowflake.account_usage.query_attribution_history
   where start_time > dateadd('day', -$days, current_timestamp())
   group by 1
@@ -34,9 +35,10 @@ mat_runs as (
   select source_url, wb_path, org, object, coalesce(element,'(workbook load)') element,
          count(*) materialization_runs,
          round(sum(coalesce(att.credits,0)),4) materialization_credits,
+         round(sum(coalesce(att.qas_credits,0)),4) materialization_qas_credits,
          round(approx_percentile(sec,.95),2) materialization_p95_sec
   from tagged left join att using(query_id)
-  where kind='materialization'
+  where kind='materialization' and wb_path is not null
   group by 1,2,3,4,5
 ),
 mat_objects as (
@@ -45,7 +47,7 @@ mat_objects as (
   from tagged t
   join snowflake.account_usage.access_history ah using(query_id),
        lateral flatten(input=>ah.objects_modified) f
-  where t.kind='materialization'
+  where t.kind='materialization' and t.wb_path is not null
     and coalesce(f.value:"objectId"::string, f.value:"objectName"::string) is not null
 ),
 read_objects as (
@@ -57,7 +59,8 @@ read_objects as (
   where t.kind='adhoc'
 ),
 matched_queries as (
-  select distinct m.source_url, t.query_id, t.sec, coalesce(att.credits,0) credits
+  select distinct m.source_url, t.query_id, t.sec, coalesce(att.credits,0) credits,
+         coalesce(att.qas_credits,0) qas_credits
   from read_objects r
   join tagged t using(query_id, wb_path)
   join mat_objects m on m.wb_path=r.wb_path and m.obj=r.obj
@@ -66,27 +69,33 @@ matched_queries as (
 matched as (
   select source_url, count(*) matched_materialized_reads,
          round(sum(credits),4) matched_read_credits,
+         round(sum(qas_credits),4) matched_read_qas_credits,
          round(approx_percentile(sec,.95),2) matched_read_p95_sec
   from matched_queries group by 1
 ),
 workbook_reads as (
   select wb_path, count(*) workbook_reads,
          round(sum(coalesce(att.credits,0)),4) workbook_read_credits,
+         round(sum(coalesce(att.qas_credits,0)),4) workbook_read_qas_credits,
          round(approx_percentile(sec,.95),2) workbook_read_p95_sec
   from tagged left join att using(query_id)
   where kind='adhoc' group by 1
 )
 select m.org, m.object, m.element, m.source_url sample_url,
        m.materialization_runs, m.materialization_credits,
-       m.materialization_p95_sec,
+       m.materialization_qas_credits, m.materialization_p95_sec,
        coalesce(x.matched_materialized_reads,0) matched_materialized_reads,
        coalesce(x.matched_read_credits,0) matched_read_credits,
+       coalesce(x.matched_read_qas_credits,0) matched_read_qas_credits,
        x.matched_read_p95_sec,
        greatest(coalesce(w.workbook_reads,0) -
-                coalesce(x.matched_materialized_reads,0),0) unmatched_reads,
+                coalesce(x.matched_materialized_reads,0),0) workbook_unmatched_reads,
        greatest(coalesce(w.workbook_read_credits,0) -
-                coalesce(x.matched_read_credits,0),0) unmatched_read_credits,
-       w.workbook_read_p95_sec unmatched_read_p95_sec
+                coalesce(x.matched_read_credits,0),0) workbook_unmatched_read_credits,
+       greatest(coalesce(w.workbook_read_qas_credits,0) -
+                coalesce(x.matched_read_qas_credits,0),0)
+         workbook_unmatched_read_qas_credits,
+       w.workbook_read_p95_sec workbook_unmatched_read_p95_sec
 from mat_runs m
 left join matched x using(source_url)
 left join workbook_reads w using(wb_path)

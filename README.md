@@ -36,6 +36,10 @@ alone; removal requires a measured no-materialization baseline.
 - **Add candidate** — repeated live workload where refresh TCO is likely lower.
 - **Optimize query/model** — lower the per-run floor before adding more caching.
 
+Observed read matching currently covers workbook materializations. Data-model
+materializations remain `Investigate` until their schedule and downstream-consumer
+lineage are resolved; the advisor does not label them unused from missing workbook matches.
+
 ## Intake
 Configure the decision constraints in `advisor-config.json`:
 1. **Latency SLO** and acceptable slowdown.
@@ -66,9 +70,9 @@ python3 scripts/render-html.py --inv out/inventory.json --out out/report.html --
 # remediate (opt-in) — needs Sigma REST creds:
 eval "$(/path/to/get-token.sh)"          # sets SIGMA_API_TOKEN + SIGMA_BASE_URL
 python3 scripts/materialize.py list   --workbook <workbookId>                        # find the elementId
-python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron "0 0 * * *" --dry-run
-python3 scripts/materialize.py run    --workbook <workbookId> --sheet <elementId>    # refresh + poll
-python3 scripts/materialize.py delete --workbook <workbookId> --sheet <elementId>    # destructive, confirms unless --yes
+python3 scripts/materialize.py create --workbook <workbookId> --element-id <elementId> --cron "0 0 * * *" --dry-run
+python3 scripts/materialize.py run    --workbook <workbookId> --sheet-id <sheetId>    # refresh + poll
+python3 scripts/materialize.py delete --workbook <workbookId> --element-id <elementId> # destructive, confirms unless --yes
 ```
 
 ## Running in Snowflake / Cortex Code
@@ -102,7 +106,7 @@ is available.
 Analysis (`analyze.py`, `enrich.py`, `render-html.py`) is read-only by construction.
 Remediation is explicit and opt-in: `materialize.py create` / `update` / `delete` manage
 a schedule's cron cadence and `materialize.py run` triggers an on-demand refresh — all four
-only act when you invoke them with a specific `--sheet`/`--workbook`/`--datamodel`.
+only act when invoked with a specific `--element-id` or `--sheet-id` and object ID.
 `delete` is destructive (cancels all future runs, no undo) and prompts for confirmation
 unless you pass `--yes`. See [`PRIVACY.md`](PRIVACY.md). The committed
 [`example/`](example/) is **fully synthetic** (fictional "Northwind Trading Co.") — no real

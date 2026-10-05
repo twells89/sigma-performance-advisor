@@ -29,9 +29,13 @@ NUMERIC_FIELDS = {
     "MAX_SEC", "TOTAL_SEC", "MAX_BYTES", "BYTES_SCANNED", "BYTES_SPILLED",
     "QUEUED_OVERLOAD_SEC", "PARTITION_SCAN_PCT", "QUERY_PATTERNS",
     "MATERIALIZATION_RUNS", "MATERIALIZATION_CREDITS",
+    "MATERIALIZATION_QAS_CREDITS",
     "MATERIALIZATION_P95_SEC", "MATCHED_MATERIALIZED_READS",
-    "MATCHED_READ_CREDITS", "MATCHED_READ_P95_SEC", "UNMATCHED_READS",
+    "MATCHED_READ_CREDITS", "MATCHED_READ_QAS_CREDITS",
+    "MATCHED_READ_P95_SEC", "UNMATCHED_READS",
     "UNMATCHED_READ_CREDITS", "UNMATCHED_READ_P95_SEC",
+    "WORKBOOK_UNMATCHED_READS", "WORKBOOK_UNMATCHED_READ_CREDITS",
+    "WORKBOOK_UNMATCHED_READ_QAS_CREDITS", "WORKBOOK_UNMATCHED_READ_P95_SEC",
     "COUNTERFACTUAL_P95_SEC", "COUNTERFACTUAL_CREDITS",
 }
 
@@ -84,8 +88,12 @@ def recommend(row, config=None, days=30, credit_price=3.0):
     """Return an evidence-based action for one query or materialization opportunity."""
     cfg = merge_config(config)
     r = coerce_row(row)
-    live_credits = _monthly(r.get("CREDITS"), days)
-    mat_credits = _monthly(r.get("MATERIALIZATION_CREDITS"), days)
+    query_credits = r.get("CREDITS", 0) + r.get("QAS_CREDITS", 0)
+    live_credits = _monthly(query_credits, days)
+    mat_credits = _monthly(
+        r.get("MATERIALIZATION_CREDITS", 0)
+        + r.get("MATERIALIZATION_QAS_CREDITS", 0), days
+    )
     live_cost = live_credits * credit_price
     mat_cost = mat_credits * credit_price
     current_cost = live_cost + mat_cost
@@ -100,6 +108,29 @@ def recommend(row, config=None, days=30, credit_price=3.0):
     freshness = str(cfg.get("freshness", "varies")).lower()
 
     if has_schedule:
+        unresolved_controls = has_controls and not controls_resolved
+        if unresolved_controls or not lineage_complete:
+            reason = (
+                "Control targets are not resolved"
+                if unresolved_controls else "lineage is incomplete"
+            )
+            return _result(
+                "Investigate materialization",
+                f"{reason}; observed utilization is {served} matched read(s) across "
+                f"{mat_runs} refresh(es). Removal safety cannot be inferred.",
+                "medium", "high", "Unknown until control/lineage behavior is verified.",
+                "Review controls and lineage, then benchmark the element with and "
+                "without materialization before changing the schedule.",
+            )
+        if mat_runs == 0:
+            return _result(
+                "Investigate materialization",
+                "A Sigma schedule exists, but no refresh history was observed in the "
+                "analysis window.",
+                "low", "medium", "Utilization and refresh TCO are unknown.",
+                "Check whether the schedule is new, paused, failing, or outside the "
+                "ACCOUNT_USAGE latency window before changing it.",
+            )
         counterfactual_p95 = r.get("COUNTERFACTUAL_P95_SEC", 0)
         counterfactual_credits = r.get("COUNTERFACTUAL_CREDITS", 0)
         counterfactual_safe = (
@@ -123,24 +154,10 @@ def recommend(row, config=None, days=30, credit_price=3.0):
                     savings * 0.8, savings, savings,
                 )
 
-        unresolved_controls = has_controls and not controls_resolved
         poor_utilization = (
             served < int(cfg["min_served_reads"])
             or served_per_refresh < float(cfg["min_served_reads_per_refresh"])
         )
-        if unresolved_controls or not lineage_complete:
-            reason = (
-                "Control targets are not resolved"
-                if unresolved_controls else "lineage is incomplete"
-            )
-            return _result(
-                "Investigate materialization",
-                f"{reason}; observed utilization is {served} matched read(s) across "
-                f"{mat_runs} refresh(es). Removal safety cannot be inferred.",
-                "medium", "high", "Unknown until control/lineage behavior is verified.",
-                "Review controls and lineage, then benchmark the element with and "
-                "without materialization before changing the schedule.",
-            )
         if poor_utilization:
             reducible = mat_cost * float(cfg["retune_refresh_reduction_pct"])
             return _result(
@@ -175,7 +192,7 @@ def recommend(row, config=None, days=30, credit_price=3.0):
 
     heavy = (
         p95 >= float(cfg["mat_min_avg_sec"])
-        or r.get("CREDITS", 0) >= float(cfg["mat_min_credits"])
+        or query_credits >= float(cfg["mat_min_credits"])
     )
     repetitive = r.get("RUNS", 0) >= int(cfg["mat_min_runs"])
     inefficient = (
@@ -184,6 +201,10 @@ def recommend(row, config=None, days=30, credit_price=3.0):
         or r.get("PARTITION_SCAN_PCT", 0) >= 80
     )
     materialization_allowed = freshness not in {"real-time", "realtime", "live"}
+    data_model_unresolved = (
+        "/data-model/" in str(r.get("OBJECT") or "")
+        and not r.get("DATA_MODEL_EVIDENCE_COMPLETE")
+    )
 
     if inefficient:
         return _result(
@@ -194,12 +215,30 @@ def recommend(row, config=None, days=30, credit_price=3.0):
             "Inspect query insights/profile, filters, joins, projected columns, and "
             "pre-aggregation; remeasure before materializing.",
         )
+    if repetitive and heavy and not lineage_complete:
+        return _result(
+            "Investigate materialization",
+            "The workload is repetitive and expensive, but Sigma lineage or schedule "
+            "evidence is incomplete.",
+            "low", "medium", "Placement and downstream impact are unknown.",
+            "Resolve the Sigma asset and lineage before creating a schedule.",
+        )
+    if repetitive and heavy and data_model_unresolved:
+        return _result(
+            "Investigate materialization",
+            "The data-model workload is repetitive and expensive, but schedule and "
+            "downstream-consumer utilization are not resolved by the workbook-only "
+            "materialization evidence pass.",
+            "low", "medium", "Potentially high fan-out; performance impact is unknown.",
+            "Inspect the data-model schedule and consumer lineage before adding, "
+            "retuning, or removing materialization.",
+        )
     if repetitive and heavy and materialization_allowed and not has_controls:
         potential = live_cost * 0.5
         return _result(
             "Add materialization candidate",
             f"The element is repetitive ({r.get('RUNS')} runs) and non-trivial "
-            f"({p95:.2f}s p95, {r.get('CREDITS', 0):.2f} credits).",
+            f"({p95:.2f}s p95, {query_credits:.2f} query + QAS credits).",
             "low", "medium", "Likely faster repeat reads; freshness and refresh cost "
             "must be measured.",
             "Create only after a capped benchmark. Compare avoided live-query credits "
@@ -217,7 +256,7 @@ def recommend(row, config=None, days=30, credit_price=3.0):
         )
     return _result(
         "Monitor",
-        f"Observed cost and latency do not justify a change ({r.get('CREDITS', 0):.3f} "
+        f"Observed cost and latency do not justify a change ({query_credits:.3f} "
         f"credits, {p95:.2f}s p95).",
         "high", "low", "No material performance change expected.",
         "Revisit if usage, cost, or the latency target changes.",
@@ -227,7 +266,9 @@ def recommend(row, config=None, days=30, credit_price=3.0):
 def score(row, config=None):
     cfg = merge_config(config)
     r = coerce_row(row)
-    credits = r.get("CREDITS", 0) + r.get("MATERIALIZATION_CREDITS", 0)
+    credits = (r.get("CREDITS", 0) + r.get("QAS_CREDITS", 0)
+               + r.get("MATERIALIZATION_CREDITS", 0)
+               + r.get("MATERIALIZATION_QAS_CREDITS", 0))
     p95 = r.get("P95_SEC") or r.get("AVG_SEC")
     runs = r.get("RUNS", 0) + r.get("MATERIALIZATION_RUNS", 0)
     action = str(r.get("ACTION") or r.get("RECOMMENDATION") or "")

@@ -1,50 +1,86 @@
-# Sigma → Snowflake Materialization Opportunities
+# Sigma Performance & Cost Opportunities
 
-_Scope: **account-wide** · last 30 days · 889 Sigma queries · 35.68 credits (~$107.04) · 8 objects · generated 2026-08-04 · **read-only**_
+_Scope: **account-wide** · last 30 days · 2,500 Sigma queries · 50.00 credits (~$150) · generated 2026-10-05 · **analysis is read-only**_
 
-_Found **3** materialize + **2** improve candidates. Thresholds: materialize when runs ≥ 12 AND (avg ≥ 3.0s OR ≥ 0.5 cr); $3.0/credit (provided)._
+Attribution coverage: **60.74%** of Sigma query credits map to a source URL. Unattributed/system activity remains a separate cost pool and is not silently dropped.
 
-Top candidates ranked by attributed compute credits × frequency. Credits come from `QUERY_ATTRIBUTION_HISTORY`; objects are resolved from each query's Sigma `QUERY_TAG`.
+## Recommended decisions
 
-| # | Object | Element | Runs | Credits | Avg s | Max s | Recommended fix |
-|---:|---|---|---:|---:|---:|---:|---|
-| 1 | [dm: Sales-Mart-DM-aaa111](https://app.sigmacomputing.com/northwind/data-model/Sales-Mart-DM-aaa111) | (workbook load) | 240 | 18.4 | 2.1 | 6.0 | Materialize (data model) |
-| 2 | [wb: Exec-Revenue-Daily-bbb222](https://app.sigmacomputing.com/northwind/workbook/Exec-Revenue-Daily-bbb222?:displayNodeId=master) | master | 132 | 9.6 | 4.8 | 9.1 | Materialize (workbook element) |
-| 3 | [wb: Ops-Live-Tiles-ccc333](https://app.sigmacomputing.com/northwind/workbook/Ops-Live-Tiles-ccc333?:displayNodeId=kpi-row) | kpi-row | 410 | 5.2 | 0.7 | 1.9 | Materialize (workbook element) |
-| 4 | [wb: Adhoc-Cohort-Explorer-ddd444](https://app.sigmacomputing.com/northwind/workbook/Adhoc-Cohort-Explorer-ddd444?:displayNodeId=cohort-tbl) | cohort-tbl | 5 | 1.1 | 14.7 | 22.0 | Improve the query |
-| 5 | [dm: Web-Events-DM-eee555](https://app.sigmacomputing.com/northwind/data-model/Web-Events-DM-eee555) | (workbook load) | 7 | 0.9 | 8.2 | 12.4 | Improve the query |
-| 6 | [wb: Finance-Snapshot-hhh888](https://app.sigmacomputing.com/northwind/workbook/Finance-Snapshot-hhh888?:displayNodeId=master) | master | 9 | 0.21 | 1.1 | 2.0 | Monitor — not worth materializing |
-| 7 | [wb: Marketing-Overview-fff666](https://app.sigmacomputing.com/northwind/workbook/Marketing-Overview-fff666?:displayNodeId=chart-1) | chart-1 | 64 | 0.18 | 0.4 | 0.9 | Monitor — not worth materializing |
-| 8 | [wb: HR-Headcount-ggg777](https://app.sigmacomputing.com/northwind/workbook/HR-Headcount-ggg777?:displayNodeId=table-main) | table-main | 22 | 0.09 | 0.3 | 0.7 | Monitor — not worth materializing |
+| # | Object | Element | Action | Runs | Credits | p95 s | Refreshes | Matched reads | Confidence |
+|---:|---|---|---|---:|---:|---:|---:|---:|---|
+| 1 | [dm: Sales-Mart-DM-aaa111](https://app.sigmacomputing.com/northwind/data-model/Sales-Mart-DM-aaa111) | (workbook load) | Investigate materialization | 240 | 20.4000 | 4.00 | 0 | 0 | low |
+| 2 | [wb: Legacy-Snapshot-iii999](https://app.sigmacomputing.com/northwind/workbook/Legacy-Snapshot-iii999?:displayNodeId=table-main) | table-main | Remove materialization candidate | 40 | 8.5000 | 1.50 | 30 | 40 | high |
+| 3 | [wb: Customer-Overview-jjj000](https://app.sigmacomputing.com/northwind/workbook/Customer-Overview-jjj000?:displayNodeId=orders) | orders | Add materialization candidate | 180 | 4.2000 | 4.50 | 0 | 0 | low |
+| 4 | [wb: Ops-Live-Tiles-ccc333](https://app.sigmacomputing.com/northwind/workbook/Ops-Live-Tiles-ccc333?:displayNodeId=kpi-row) | kpi-row | Retune materialization | 80 | 2.8000 | 2.00 | 90 | 4 | medium |
+| 5 | [wb: Exec-Revenue-Daily-bbb222](https://app.sigmacomputing.com/northwind/workbook/Exec-Revenue-Daily-bbb222?:displayNodeId=master) | master | Keep materialization | 510 | 2.4000 | 1.30 | 30 | 500 | medium |
+| 6 | [wb: Finance-Snapshot-hhh888](https://app.sigmacomputing.com/northwind/workbook/Finance-Snapshot-hhh888?:displayNodeId=master) | master | Investigate materialization | 60 | 1.6000 | 3.00 | 30 | 20 | medium |
+| 7 | [wb: Adhoc-Cohort-Explorer-ddd444](https://app.sigmacomputing.com/northwind/workbook/Adhoc-Cohort-Explorer-ddd444?:displayNodeId=cohort-tbl) | cohort-tbl | Optimize query/model | 5 | 1.1000 | 18.00 | 0 | 0 | medium |
+| 8 | [wb: Marketing-Overview-fff666](https://app.sigmacomputing.com/northwind/workbook/Marketing-Overview-fff666?:displayNodeId=chart-1) | chart-1 | Monitor | 64 | 0.1800 | 0.70 | 0 | 0 | high |
+| 9 | [wb: HR-Headcount-ggg777](https://app.sigmacomputing.com/northwind/workbook/HR-Headcount-ggg777?:displayNodeId=table-main) | table-main | Monitor | 22 | 0.0900 | 0.50 | 0 | 0 | high |
 
-## Two ways to remediate each candidate
+### Investigate materialization: /data-model/Sales-Mart-DM-aaa111 / (workbook load)
 
-For every candidate above you have two levers — one reduces the cost *per run*, the other removes redundant runs entirely:
+- Why: The data-model workload is repetitive and expensive, but schedule and downstream-consumer utilization are not resolved by the workbook-only materialization evidence pass.
+- Performance: Potentially high fan-out; performance impact is unknown.
+- Validate: Inspect the data-model schedule and consumer lineage before adding, retuning, or removing materialization.
 
-**Option A — Improve the query (in the workbook / data model).** Pull the object's spec via the Sigma API and fix what makes it expensive: push heavy calc-column logic upstream, declare relationships instead of cross-element `Lookup()`, drop unused columns, or pre-aggregate. Best when a single run is slow/large. (Pairs with the `sigma-data-model-assessment` skill, which already flags these patterns.)
+### Remove materialization candidate: /workbook/Legacy-Snapshot-iii999 / table-main
 
-**Option B — Materialize via the Sigma API.** Cache the element's result so repeat views read a stored table instead of recomputing. Best when an object is *repetitive*. Mechanics:
+- Why: Measured no-materialization p95 is 3.20s and remains within the latency allowance; projected monthly savings are about $24.
+- Performance: Measured p95 without materialization: 3.20s.
+- Validate: Remove only with owner approval, preserve the cron/timezone, and monitor latency and credits with a rollback window.
 
-```
-eval "$(~/.claude/skills/tableau-to-sigma/scripts/get-token.sh)"
-python3 scripts/materialize.py list   --workbook <workbookId>                          # find the elementId
-python3 scripts/materialize.py create --workbook <workbookId> --sheet <elementId> --cron "0 0 * * *"   # one-time
-python3 scripts/materialize.py run    --workbook <workbookId> --sheet <elementId>       # refresh + poll
-# data models:  materialize.py create/run --datamodel <dataModelId> --sheet <elementId>
-```
+### Add materialization candidate: /workbook/Customer-Overview-jjj000 / orders
 
-> **API note:** the Sigma API can *create*, *update*, *delete*, *list*, *trigger*, and *monitor* materialization schedules end to end — no UI step required. Schedule create/update/delete (cron cadence only, no destination field) are a **private-beta** REST surface; see `refs/materialization-playbook.md` for exact shapes and a live-deployment caveat before depending on them for a given org. `list`/`run`/monitor are stable and already live-verified.
+- Why: The element is repetitive (180 runs) and non-trivial (4.50s p95, 4.20 query + QAS credits).
+- Performance: Likely faster repeat reads; freshness and refresh cost must be measured.
+- Validate: Create only after a capped benchmark. Compare avoided live-query credits with refresh compute and storage.
 
-## How to read this
+### Retune materialization: /workbook/Ops-Live-Tiles-ccc333 / kpi-row
 
-- **Credits** = real attributed compute for that object's queries over the window. Multiply by your $/credit rate for dollars.
+- Why: Only 4 matched read(s) were observed across 90 refresh(es) (0.04 reads/refresh).
+- Performance: Expected to preserve cached performance while reducing refresh work; the exact impact requires a cadence experiment.
+- Validate: Align cadence to source updates and user access. Measure one full business cycle before considering removal.
 
-- **Materialization candidates** are objects that are both *expensive* and *repetitive* — caching their result removes redundant warehouse runs. Data-model elements rank highest because one materialization benefits every workbook built on them.
+### Keep materialization: /workbook/Exec-Revenue-Daily-bbb222 / master
+
+- Why: It serves 500 observed read(s) across 30 refresh(es), and matched-read p95 is 1.30s.
+- Performance: Current cached performance meets the configured SLO.
+- Validate: Continue measuring refresh cost and matched reads; retune if utilization falls.
+
+### Investigate materialization: /workbook/Finance-Snapshot-hhh888 / master
+
+- Why: Control targets are not resolved; observed utilization is 20 matched read(s) across 30 refresh(es). Removal safety cannot be inferred.
+- Performance: Unknown until control/lineage behavior is verified.
+- Validate: Review controls and lineage, then benchmark the element with and without materialization before changing the schedule.
+
+### Optimize query/model: /workbook/Adhoc-Cohort-Explorer-ddd444 / cohort-tbl
+
+- Why: The workload is expensive per run (p95 18.00s) and shows scan, pruning, or spill pressure. Lower the cost floor before caching it.
+- Performance: Expected to reduce both live-query cost and latency.
+- Validate: Inspect query insights/profile, filters, joins, projected columns, and pre-aggregation; remeasure before materializing.
+
+### Monitor: /workbook/Marketing-Overview-fff666 / chart-1
+
+- Why: Observed cost and latency do not justify a change (0.180 credits, 0.70s p95).
+- Performance: No material performance change expected.
+- Validate: Revisit if usage, cost, or the latency target changes.
+
+### Monitor: /workbook/HR-Headcount-ggg777 / table-main
+
+- Why: Observed cost and latency do not justify a change (0.090 credits, 0.50s p95).
+- Performance: No material performance change expected.
+- Validate: Revisit if usage, cost, or the latency target changes.
+
+## Warehouse context
+
+- Compute: 70.0 credits
+- Estimated idle: 25.0 credits (35.71%)
+- Idle is a warehouse-level upper bound; it is not automatically attributed to Sigma or to any one workbook.
 
 ## Method & caveats
 
-- Read-only `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` + `QUERY_ATTRIBUTION_HISTORY`, joined on `query_id`; Sigma objects parsed from `QUERY_TAG` (`Sigma Σ {sourceUrl,email,kind}`).
-
-- Only `kind` carrying a `sourceUrl` is attributable; pure scheduler/system queries (`SigmaSchedulerRobot`, schema introspection) are excluded.
-
-- `ACCOUNT_USAGE` has up to ~3h latency and `QUERY_ATTRIBUTION_HISTORY` covers warehouse compute (not cloud-services-only queries).
+- Query cost comes from `QUERY_ATTRIBUTION_HISTORY`; materialization utilization matches `ACCESS_HISTORY.objects_modified` to `direct_objects_accessed`.
+- A removal recommendation requires a measured no-materialization baseline. Refresh cost alone is never treated as proof that removal is safe.
+- Controls can bypass materialization. Unresolved target bindings force manual review.
+- `ACCOUNT_USAGE` is delayed and query attribution excludes idle, storage, transfer, cloud services, and most serverless costs.

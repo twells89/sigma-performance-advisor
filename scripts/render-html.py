@@ -42,7 +42,8 @@ def render(inv, customer):
                "improve" if rec.startswith("Optimize") else
                "add" if rec.startswith("Add") else "monitor")
         rows += (f"<tr><td>{i}</td><td class='obj'>{obj_cell}</td><td>{esc(c['ELEMENT'])}</td>"
-                 f"<td class='num'>{c.get('RUNS',0)}</td><td class='num'>{c.get('CREDITS',0):.4f}</td>"
+                 f"<td class='num'>{c.get('RUNS',0)}</td>"
+                 f"<td class='num'>{c.get('TOTAL_CREDITS',c.get('CREDITS',0)):.4f}</td>"
                  f"<td class='num'>{c.get('P95_SEC',0):.2f}</td>"
                  f"<td class='num'>{c.get('MATERIALIZATION_RUNS',0)}</td>"
                  f"<td class='num'>{c.get('MATCHED_MATERIALIZED_READS',0)}</td>"

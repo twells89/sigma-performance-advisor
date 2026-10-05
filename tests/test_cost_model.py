@@ -57,6 +57,18 @@ class CostModelTests(unittest.TestCase):
             recommend(measured, {"min_monthly_savings": 10})["ACTION"],
             "Remove materialization candidate",
         )
+        self.assertEqual(
+            recommend({
+                **measured,
+                "HAS_CONTROLS": True,
+                "CONTROL_TARGETS_RESOLVED": False,
+            })["ACTION"],
+            "Investigate materialization",
+        )
+        self.assertEqual(
+            recommend({**measured, "LINEAGE_COMPLETE": False})["ACTION"],
+            "Investigate materialization",
+        )
 
     def test_optimizes_intrinsically_expensive_query(self):
         row = {
@@ -71,6 +83,19 @@ class CostModelTests(unittest.TestCase):
         self.assertEqual(
             recommend(row, {"freshness": "real-time"})["ACTION"], "Monitor"
         )
+
+    def test_qas_credits_are_included_in_thresholds(self):
+        row = {"RUNS": 20, "CREDITS": 0, "QAS_CREDITS": 1, "P95_SEC": 1}
+        self.assertEqual(recommend(row)["ACTION"], "Add materialization candidate")
+
+    def test_data_model_materialization_requires_resolved_evidence(self):
+        row = {
+            "OBJECT": "/data-model/example",
+            "RUNS": 100,
+            "CREDITS": 5,
+            "P95_SEC": 4,
+        }
+        self.assertEqual(recommend(row)["ACTION"], "Investigate materialization")
 
 
 if __name__ == "__main__":

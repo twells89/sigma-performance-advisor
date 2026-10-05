@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""Emit a synthetic sample-rows.json (fictional 'Northwind Trading Co.' — no real data)
-shaped exactly like the output of sql/sigma_cost.sql. Render the example with:
-
-    python3 example/make-sample.py
-    python3 scripts/analyze.py --from-rows example/sample-rows.json --credit-price 3 \\
-        --goal performance_per_dollar --out example
-    python3 scripts/render-html.py --inv example/inventory.json \\
-        --out example/sample-report.html --customer "Northwind Trading Co. (sample)"
-"""
-import json, os
+"""Regenerate the fully synthetic Northwind v2 bundle and committed reports."""
+import json, os, subprocess, sys
 HERE = os.path.dirname(__file__)
+ROOT = os.path.dirname(HERE)
 U = "https://app.sigmacomputing.com/northwind"
 
 
@@ -24,7 +17,10 @@ def row(obj, el, runs, credits, avg, p95, mx, mb, url, **extra):
 workload = [
     # Add: repeated and costly, with no existing schedule.
     row("/data-model/Sales-Mart-DM-aaa111", "(workbook load)", 240, 18.4, 2.1, 4.0, 6.0,
-        400_000_000, f"{U}/data-model/Sales-Mart-DM-aaa111"),
+        400_000_000, f"{U}/data-model/Sales-Mart-DM-aaa111", QAS_CREDITS=2.0),
+    row("/workbook/Customer-Overview-jjj000", "orders", 180, 4.2, 2.2, 4.5, 6.5,
+        350_000_000,
+        f"{U}/workbook/Customer-Overview-jjj000?:displayNodeId=orders"),
     # Keep: high utilization and fast matched reads.
     row("/workbook/Exec-Revenue-Daily-bbb222", "master", 510, 1.2, .7, 1.3, 2.1,
         2_500_000_000, f"{U}/workbook/Exec-Revenue-Daily-bbb222?:displayNodeId=master"),
@@ -56,10 +52,14 @@ def mat(obj, el, url, runs, credits, served, matched_p95, unmatched, unmatched_p
     return {
         "ORG": "northwind", "OBJECT": obj, "ELEMENT": el, "SAMPLE_URL": url,
         "MATERIALIZATION_RUNS": runs, "MATERIALIZATION_CREDITS": credits,
+        "MATERIALIZATION_QAS_CREDITS": 0,
         "MATERIALIZATION_P95_SEC": 12,
         "MATCHED_MATERIALIZED_READS": served, "MATCHED_READ_CREDITS": .05,
-        "MATCHED_READ_P95_SEC": matched_p95, "UNMATCHED_READS": unmatched,
-        "UNMATCHED_READ_CREDITS": .2, "UNMATCHED_READ_P95_SEC": unmatched_p95,
+        "MATCHED_READ_QAS_CREDITS": 0, "MATCHED_READ_P95_SEC": matched_p95,
+        "WORKBOOK_UNMATCHED_READS": unmatched,
+        "WORKBOOK_UNMATCHED_READ_CREDITS": .2,
+        "WORKBOOK_UNMATCHED_READ_QAS_CREDITS": 0,
+        "WORKBOOK_UNMATCHED_READ_P95_SEC": unmatched_p95,
     }
 
 
@@ -82,8 +82,13 @@ bundle = {
     "workload": workload,
     "coverage": [{
         "ALL_SIGMA_QUERIES": 2500, "ALL_SIGMA_CREDITS": 45.0,
+        "ALL_QAS_CREDITS": 5.0,
         "ATTRIBUTABLE_QUERIES": 981, "ATTRIBUTABLE_CREDITS": 23.37,
-        "UNATTRIBUTED_QUERIES": 1519, "UNATTRIBUTED_CREDITS": 21.63,
+        "ATTRIBUTABLE_QAS_CREDITS": 2.0,
+        "MATERIALIZATION_QUERIES": 120, "MATERIALIZATION_CREDITS": 4.0,
+        "MATERIALIZATION_QAS_CREDITS": 1.0,
+        "UNATTRIBUTED_QUERIES": 1399, "UNATTRIBUTED_CREDITS": 17.63,
+        "UNATTRIBUTED_QAS_CREDITS": 2.0,
     }],
     "materializations": materializations,
     "warehouses": [{
@@ -97,3 +102,18 @@ bundle = {
 out = os.path.join(HERE, "sample-rows.json")
 json.dump(bundle, open(out, "w"), indent=2)
 print("wrote", out, f"({len(workload)} workload rows)")
+subprocess.run([
+    sys.executable, os.path.join(ROOT, "scripts", "analyze.py"),
+    "--from-rows", out, "--credit-price", "3",
+    "--goal", "performance_per_dollar", "--out", HERE,
+], check=True)
+os.replace(os.path.join(HERE, "inventory.json"),
+           os.path.join(HERE, "sample-inventory.json"))
+os.replace(os.path.join(HERE, "REPORT.md"),
+           os.path.join(HERE, "sample-REPORT.md"))
+subprocess.run([
+    sys.executable, os.path.join(ROOT, "scripts", "render-html.py"),
+    "--inv", os.path.join(HERE, "sample-inventory.json"),
+    "--out", os.path.join(HERE, "sample-report.html"),
+    "--customer", "Northwind Trading Co. (sample)",
+], check=True)

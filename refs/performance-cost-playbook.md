@@ -17,6 +17,8 @@ The objective is not “remove materializations” or “materialize more.” It
 
 Keep unmatched reads explicit. A failed object match can mean bypass, object rotation,
 incomplete history, or missing privileges; it is not proof that the schedule is unused.
+The current `ACCESS_HISTORY` utilization query matches workbook materializations only;
+data-model schedules require consumer-lineage review and remain `Investigate`.
 
 ## Decisions
 

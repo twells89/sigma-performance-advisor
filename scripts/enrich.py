@@ -120,7 +120,17 @@ def main():
             continue
         workbook = match_workbook(candidate, workbooks)
         if not workbook:
-            candidate["SIGMA_ENRICHMENT"] = "workbook_not_accessible"
+            candidate.update({
+                "SIGMA_ENRICHMENT": "workbook_not_accessible",
+                "HAS_CONTROLS": None,
+                "CONTROL_TARGETS_RESOLVED": False,
+                "LINEAGE_COMPLETE": False,
+            })
+            candidate.update(recommend(
+                candidate, inventory.get("config"), inventory.get("days", 30),
+                float(inventory.get("config", {}).get("credit_price", 3.0)),
+            ))
+            candidate["SCORE"] = round(score(candidate, inventory.get("config")), 2)
             continue
         matched += 1
         workbook_id = str(workbook["workbookId"])
@@ -132,11 +142,25 @@ def main():
                 schedules = client.paged(
                     f"/v2.1/workbooks/{quoted}/materialization-schedules"
                 )
-                cache[workbook_id] = (elements, lineage, schedules)
+                cache[workbook_id] = (elements, lineage, schedules, None)
             except RuntimeError as exc:
                 warnings.append(str(exc))
-                cache[workbook_id] = ([], [], [])
-        elements, lineage, schedules = cache[workbook_id]
+                cache[workbook_id] = (None, None, None, str(exc))
+        elements, lineage, schedules, enrichment_error = cache[workbook_id]
+        if enrichment_error:
+            candidate.update({
+                "WORKBOOK_ID": workbook_id,
+                "HAS_CONTROLS": None,
+                "CONTROL_TARGETS_RESOLVED": False,
+                "LINEAGE_COMPLETE": False,
+                "SIGMA_ENRICHMENT": "error",
+            })
+            candidate.update(recommend(
+                candidate, inventory.get("config"), inventory.get("days", 30),
+                float(inventory.get("config", {}).get("credit_price", 3.0)),
+            ))
+            candidate["SCORE"] = round(score(candidate, inventory.get("config")), 2)
+            continue
         controls = [
             element for element in elements
             if str(element.get("type") or "").lower() == "control"
@@ -178,6 +202,19 @@ def main():
         candidate["SCORE"] = round(score(candidate, inventory.get("config")), 2)
 
     inventory["candidates"].sort(key=lambda row: -row.get("SCORE", 0))
+    actions = {}
+    total_savings = 0.0
+    for candidate in inventory["candidates"]:
+        action = candidate.get("ACTION", "Monitor")
+        actions[action] = actions.get(action, 0) + 1
+        total_savings += float(candidate.get("SAVINGS_EXPECTED", 0) or 0)
+        if "CURRENT_MONTHLY_COST" in candidate:
+            candidate["PROJECTED_MONTHLY_COST"] = round(max(
+                float(candidate["CURRENT_MONTHLY_COST"])
+                - float(candidate.get("SAVINGS_EXPECTED", 0) or 0), 0
+            ), 2)
+    inventory.setdefault("totals", {})["actions"] = actions
+    inventory["totals"]["estimated_monthly_savings"] = round(total_savings, 2)
     inventory["warnings"] = warnings
     inventory["enrichment"] = {
         "accessible_workbooks": len(workbooks),
@@ -187,6 +224,9 @@ def main():
     output = args.out or args.inv
     with open(output, "w") as f:
         json.dump(inventory, f, indent=2)
+    if os.path.basename(output) == "inventory.json":
+        from analyze import write_md
+        write_md(os.path.dirname(os.path.abspath(output)), inventory)
     print(f"enriched {matched} candidate(s); wrote {output}", file=sys.stderr)
 
 

@@ -81,7 +81,7 @@ limit {LIMIT};
 
 
 COVERAGE_SQL = r"""
-with qh as (
+with parsed as (
   select query_id,
          iff(position('{' in query_tag) > 0,
              try_parse_json(substr(query_tag, position('{' in query_tag))), null) as j
@@ -89,6 +89,10 @@ with qh as (
   where start_time > dateadd('day', -{DAYS}, current_timestamp())
     and query_tag ilike 'Sigma %'
     and execution_status = 'SUCCESS'
+),
+qh as (
+  select * from parsed where 1=1
+    {ORG_FILTER}
 ),
 att as (
   select query_id, sum(credits_attributed_compute) credits,
@@ -106,9 +110,23 @@ select count(*) all_sigma_queries,
        round(sum(iff(qh.j:"sourceUrl"::string is not null
                      and coalesce(qh.j:"kind"::string,'') <> 'materialization',
                      coalesce(att.credits,0),0)),4) attributable_credits,
-       count_if(qh.j:"sourceUrl"::string is null) unattributed_queries,
-       round(sum(iff(qh.j:"sourceUrl"::string is null,
-                     coalesce(att.credits,0),0)),4) unattributed_credits
+       round(sum(iff(qh.j:"sourceUrl"::string is not null
+                     and coalesce(qh.j:"kind"::string,'') <> 'materialization',
+                     coalesce(att.qas_credits,0),0)),4) attributable_qas_credits,
+       count_if(qh.j:"kind"::string = 'materialization') materialization_queries,
+       round(sum(iff(qh.j:"kind"::string = 'materialization',
+                     coalesce(att.credits,0),0)),4) materialization_credits,
+       round(sum(iff(qh.j:"kind"::string = 'materialization',
+                     coalesce(att.qas_credits,0),0)),4) materialization_qas_credits,
+       count_if(qh.j:"sourceUrl"::string is null
+                and coalesce(qh.j:"kind"::string,'') <> 'materialization')
+         unattributed_queries,
+       round(sum(iff(qh.j:"sourceUrl"::string is null
+                     and coalesce(qh.j:"kind"::string,'') <> 'materialization',
+                     coalesce(att.credits,0),0)),4) unattributed_credits,
+       round(sum(iff(qh.j:"sourceUrl"::string is null
+                     and coalesce(qh.j:"kind"::string,'') <> 'materialization',
+                     coalesce(att.qas_credits,0),0)),4) unattributed_qas_credits
 from qh left join att using(query_id);
 """
 
@@ -134,7 +152,8 @@ with tagged as (
     {ORG_FILTER}
 ),
 att as (
-  select query_id, sum(credits_attributed_compute) credits
+  select query_id, sum(credits_attributed_compute) credits,
+         sum(credits_used_query_acceleration) qas_credits
   from snowflake.account_usage.query_attribution_history
   where start_time > dateadd('day', -{DAYS}, current_timestamp())
   group by 1
@@ -143,9 +162,10 @@ mat_runs as (
   select source_url, wb_path, org, object, coalesce(element,'(workbook load)') element,
          count(*) materialization_runs,
          round(sum(coalesce(att.credits,0)),4) materialization_credits,
+         round(sum(coalesce(att.qas_credits,0)),4) materialization_qas_credits,
          round(approx_percentile(sec,.95),2) materialization_p95_sec
   from tagged left join att using(query_id)
-  where kind='materialization'
+  where kind='materialization' and wb_path is not null
   group by 1,2,3,4,5
 ),
 mat_objects as (
@@ -154,7 +174,7 @@ mat_objects as (
   from tagged t
   join snowflake.account_usage.access_history ah using(query_id),
        lateral flatten(input=>ah.objects_modified) f
-  where t.kind='materialization'
+  where t.kind='materialization' and t.wb_path is not null
     and coalesce(f.value:"objectId"::string, f.value:"objectName"::string) is not null
 ),
 read_objects as (
@@ -166,7 +186,8 @@ read_objects as (
   where t.kind='adhoc'
 ),
 matched_queries as (
-  select distinct m.source_url, t.query_id, t.sec, coalesce(att.credits,0) credits
+  select distinct m.source_url, t.query_id, t.sec, coalesce(att.credits,0) credits,
+         coalesce(att.qas_credits,0) qas_credits
   from read_objects r
   join tagged t using(query_id, wb_path)
   join mat_objects m on m.wb_path=r.wb_path and m.obj=r.obj
@@ -175,27 +196,33 @@ matched_queries as (
 matched as (
   select source_url, count(*) matched_materialized_reads,
          round(sum(credits),4) matched_read_credits,
+         round(sum(qas_credits),4) matched_read_qas_credits,
          round(approx_percentile(sec,.95),2) matched_read_p95_sec
   from matched_queries group by 1
 ),
 workbook_reads as (
   select wb_path, count(*) workbook_reads,
          round(sum(coalesce(att.credits,0)),4) workbook_read_credits,
+         round(sum(coalesce(att.qas_credits,0)),4) workbook_read_qas_credits,
          round(approx_percentile(sec,.95),2) workbook_read_p95_sec
   from tagged left join att using(query_id)
   where kind='adhoc' group by 1
 )
 select m.org, m.object, m.element, m.source_url sample_url,
        m.materialization_runs, m.materialization_credits,
-       m.materialization_p95_sec,
+       m.materialization_qas_credits, m.materialization_p95_sec,
        coalesce(x.matched_materialized_reads,0) matched_materialized_reads,
        coalesce(x.matched_read_credits,0) matched_read_credits,
+       coalesce(x.matched_read_qas_credits,0) matched_read_qas_credits,
        x.matched_read_p95_sec,
        greatest(coalesce(w.workbook_reads,0) -
-                coalesce(x.matched_materialized_reads,0),0) unmatched_reads,
+                coalesce(x.matched_materialized_reads,0),0) workbook_unmatched_reads,
        greatest(coalesce(w.workbook_read_credits,0) -
-                coalesce(x.matched_read_credits,0),0) unmatched_read_credits,
-       w.workbook_read_p95_sec unmatched_read_p95_sec
+                coalesce(x.matched_read_credits,0),0) workbook_unmatched_read_credits,
+       greatest(coalesce(w.workbook_read_qas_credits,0) -
+                coalesce(x.matched_read_qas_credits,0),0)
+         workbook_unmatched_read_qas_credits,
+       w.workbook_read_p95_sec workbook_unmatched_read_p95_sec
 from mat_runs m
 left join matched x using(source_url)
 left join workbook_reads w using(wb_path)
@@ -282,12 +309,16 @@ def main():
     if a.config and os.path.exists(a.config):
         with open(a.config) as f:
             file_config = json.load(f)
+        def explicitly_supplied(key):
+            flag = "--" + key.replace("_", "-")
+            return any(arg == flag or arg.startswith(flag + "=")
+                       for arg in sys.argv[1:])
         for key in (
             "mat_min_runs", "mat_min_avg_sec", "mat_min_credits", "credit_price",
             "days", "goal", "latency_slo_sec", "freshness",
             "acceptable_slowdown_sec", "org", "min_runs", "limit",
         ):
-            if key in file_config and getattr(a, key) == ap.get_default(key):
+            if key in file_config and not explicitly_supplied(key):
                 setattr(a, key, file_config[key])
     model_config = merge_config({
         **file_config,
@@ -316,6 +347,11 @@ def main():
               .replace("{MIN_RUNS}", str(a.min_runs)).replace("{LIMIT}", str(a.limit)))
 
     coverage_rows, materialization_rows, warehouse_rows, warnings = [], [], [], []
+    if a.org:
+        warnings.append(
+            "Org-scoped totals exclude Sigma-tagged queries without a sourceUrl "
+            "because those queries cannot be assigned safely to an org."
+        )
     if a.from_rows:
         with open(a.from_rows) as f:
             supplied = json.load(f)
@@ -332,6 +368,7 @@ def main():
         rows = run_sql(a.conn, sql)
         coverage_rows = run_sql(
             a.conn, COVERAGE_SQL.replace("{DAYS}", str(a.days))
+            .replace("{ORG_FILTER}", org_filter)
         )
         mat_sql = (MATERIALIZATION_SQL.replace("{DAYS}", str(a.days))
                    .replace("{ORG_FILTER}", org_filter))
@@ -339,12 +376,18 @@ def main():
             materialization_rows = run_sql(a.conn, mat_sql)
         except Exception as e:
             warnings.append("Materialization utilization unavailable: " + str(e)[:240])
-        try:
-            warehouse_rows = run_sql(
-                a.conn, WAREHOUSE_SQL.replace("{DAYS}", str(a.days))
+        if a.org:
+            warnings.append(
+                "Warehouse idle context is omitted for org scope because warehouse "
+                "metering cannot be safely assigned to one Sigma org."
             )
-        except Exception as e:
-            warnings.append("Warehouse idle analysis unavailable: " + str(e)[:240])
+        else:
+            try:
+                warehouse_rows = run_sql(
+                    a.conn, WAREHOUSE_SQL.replace("{DAYS}", str(a.days))
+                )
+            except Exception as e:
+                warnings.append("Warehouse idle analysis unavailable: " + str(e)[:240])
 
     rows = [coerce_row(r) for r in rows]
     materialization_rows = [coerce_row(r) for r in materialization_rows]
@@ -358,14 +401,12 @@ def main():
                 "OBJECT": mat.get("OBJECT"),
                 "ELEMENT": mat.get("ELEMENT"),
                 "SAMPLE_URL": mat.get("SAMPLE_URL"),
-                "RUNS": (mat.get("MATCHED_MATERIALIZED_READS", 0)
-                         + mat.get("UNMATCHED_READS", 0)),
-                "CREDITS": (mat.get("MATCHED_READ_CREDITS", 0)
-                            + mat.get("UNMATCHED_READ_CREDITS", 0)),
+                "RUNS": mat.get("MATCHED_MATERIALIZED_READS", 0),
+                "CREDITS": mat.get("MATCHED_READ_CREDITS", 0),
+                "QAS_CREDITS": mat.get("MATCHED_READ_QAS_CREDITS", 0),
                 "AVG_SEC": 0.0,
                 "P50_SEC": 0.0,
-                "P95_SEC": max(mat.get("MATCHED_READ_P95_SEC", 0),
-                               mat.get("UNMATCHED_READ_P95_SEC", 0)),
+                "P95_SEC": mat.get("MATCHED_READ_P95_SEC", 0),
                 "MAX_SEC": 0.0,
                 "TOTAL_SEC": 0.0,
                 "MAX_BYTES": 0.0,
@@ -375,7 +416,7 @@ def main():
         target.update({
             k: v for k, v in mat.items()
             if k.startswith("MATERIALIZATION_") or k.startswith("MATCHED_")
-            or k.startswith("UNMATCHED_") or k.startswith("COUNTERFACTUAL_")
+            or k.startswith("UNMATCHED_") or k.startswith("WORKBOOK_UNMATCHED_")
             or k in {"HAS_CONTROLS", "CONTROL_TARGETS_RESOLVED",
                      "LINEAGE_COMPLETE"}
         })
@@ -386,8 +427,15 @@ def main():
         r.update(rec)
         r["SCORE"] = round(score(r, model_config), 2)
         r["DOLLARS"] = round(
-            (r.get("CREDITS", 0) + r.get("MATERIALIZATION_CREDITS", 0))
+            (r.get("CREDITS", 0) + r.get("QAS_CREDITS", 0)
+             + r.get("MATERIALIZATION_CREDITS", 0)
+             + r.get("MATERIALIZATION_QAS_CREDITS", 0))
             * a.credit_price, 2
+        )
+        r["TOTAL_CREDITS"] = round(
+            r.get("CREDITS", 0) + r.get("QAS_CREDITS", 0)
+            + r.get("MATERIALIZATION_CREDITS", 0)
+            + r.get("MATERIALIZATION_QAS_CREDITS", 0), 4
         )
         r["CURRENT_MONTHLY_COST"] = round(
             r["DOLLARS"] * 30.0 / max(a.days, 1), 2
@@ -399,14 +447,28 @@ def main():
 
     coverage = {str(k).lower(): v for k, v in
                 (coverage_rows[0].items() if coverage_rows else [])}
-    candidate_credits = round(sum(r.get("CREDITS", 0) for r in rows), 4)
-    all_credits = float(coverage.get("all_sigma_credits", candidate_credits) or 0)
+    candidate_credits = round(sum(
+        r.get("CREDITS", 0) + r.get("QAS_CREDITS", 0)
+        + r.get("MATERIALIZATION_CREDITS", 0)
+        + r.get("MATERIALIZATION_QAS_CREDITS", 0)
+        for r in rows
+    ), 4)
+    all_credits = (
+        float(coverage.get("all_sigma_credits", candidate_credits) or 0)
+        + float(coverage.get("all_qas_credits", 0) or 0)
+    )
     all_queries = int(float(coverage.get(
         "all_sigma_queries", sum(r.get("RUNS", 0) for r in rows)
     ) or 0))
-    attributable_credits = float(
-        coverage.get("attributable_credits", candidate_credits) or 0
+    attributable_credits = (
+        float(coverage.get("attributable_credits", candidate_credits) or 0)
+        + float(coverage.get("attributable_qas_credits", 0) or 0)
     )
+    materialization_credits = (
+        float(coverage.get("materialization_credits", 0) or 0)
+        + float(coverage.get("materialization_qas_credits", 0) or 0)
+    )
+    mapped_credits = attributable_credits + materialization_credits
     warehouse = ({str(k).lower(): v for k, v in warehouse_rows[0].items()}
                  if warehouse_rows else {})
     action_counts = {}
@@ -421,7 +483,7 @@ def main():
         "candidate_credits": candidate_credits,
         "attributable_credits": round(attributable_credits, 4),
         "credit_coverage_pct": round(
-            attributable_credits / all_credits * 100, 2
+            mapped_credits / all_credits * 100, 2
         ) if all_credits else None,
         "objects": len({r.get("OBJECT") for r in rows if r.get("OBJECT")}),
         "orgs": len({r.get("ORG") for r in rows if r.get("ORG")}),
@@ -443,11 +505,16 @@ def main():
                 coverage.get("attributable_queries", sum(r["RUNS"] for r in rows))
             ) or 0),
             "attributable_credits": round(attributable_credits, 4),
+            "materialization_queries": int(float(
+                coverage.get("materialization_queries", 0) or 0
+            )),
+            "materialization_credits": round(materialization_credits, 4),
             "unattributed_queries": int(float(
                 coverage.get("unattributed_queries", 0) or 0
             )),
-            "unattributed_credits": float(
-                coverage.get("unattributed_credits", 0) or 0
+            "unattributed_credits": round(
+                float(coverage.get("unattributed_credits", 0) or 0)
+                + float(coverage.get("unattributed_qas_credits", 0) or 0), 4
             ),
         },
         "warehouse": warehouse,
@@ -490,7 +557,8 @@ def write_md(outdir, inv):
         url = r.get("SAMPLE_URL")
         obj_cell = f"[{obj}]({url})" if url else obj
         w(f"| {i} | {obj_cell} | {r.get('ELEMENT','')} | {r['ACTION']} | "
-          f"{r.get('RUNS',0)} | {r.get('CREDITS',0):.4f} | "
+          f"{r.get('RUNS',0)} | "
+          f"{r.get('TOTAL_CREDITS',r.get('CREDITS',0)):.4f} | "
           f"{r.get('P95_SEC',0):.2f} | {r.get('MATERIALIZATION_RUNS',0)} | "
           f"{r.get('MATCHED_MATERIALIZED_READS',0)} | {r['CONFIDENCE']} |")
     w("")

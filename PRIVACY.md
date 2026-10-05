@@ -6,8 +6,8 @@
 query results or warehouse row data. `enrich.py` uses only Sigma `GET` endpoints.
 
 **Remediation is explicit and opt-in.** Four `materialize.py` subcommands change state,
-and only when you invoke one explicitly with a specific `--sheet`/`--workbook`/
-`--datamodel`: `create` and `update` set a schedule's cron cadence (public-beta REST
+and only when you invoke one explicitly with a specific `--element-id`/`--sheet-id` and
+`--workbook`/`--datamodel`: `create` and `update` set a schedule's cron cadence (public-beta REST
 API); `delete` removes a schedule outright and cancels future runs—it has no undo and
 prompts unless you pass `--yes`; `run` triggers an on-demand refresh.
 `materialize.py list` is read-only, and all state-changing commands support `--dry-run`.
