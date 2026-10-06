@@ -3,48 +3,31 @@
 Remediation — Option B: create, run, and monitor a Sigma materialization via the REST API.
 
 Sigma's API can LIST, CREATE, UPDATE, and DELETE materialization schedules, plus TRIGGER
-and MONITOR a one-off run. A schedule body is just a cron cadence — there is no
-destination/target field; materialization always writes back to Sigma's own internal
-cache, not a user-chosen table. (Earlier revisions of this script and the playbook
-claimed schedule creation was UI-only with no REST endpoint — that was false, retracted
-2026-08; see refs/materialization-playbook.md for the full writeup.)
+and MONITOR a one-off run. A schedule body is a cron cadence — there is no user-chosen
+destination field. Sigma writes a table or dynamic table into its managed write-back
+schema in the customer's warehouse.
 
-Private-beta / live-deployment caveat: create/update/delete hit a newer, element-scoped
-route (".../elements/{elementId}/materializationSchedules"). Path and body shape are
-confirmed correct directly against Sigma's own live help-center reference pages (fetched
-2026-08-04), which state verbatim: "This documentation describes a private beta feature
-and is subject to the Beta features disclaimer."
+Schedule create/update/delete use the element-scoped public-beta route
+(".../elements/{elementId}/materializationSchedules"). The workbook list endpoint is
+currently v2.1 and remains unscoped and hyphenated.
   https://help.sigmacomputing.com/reference/create-materialization-schedule
   https://help.sigmacomputing.com/reference/patch-materialization-schedule
   https://help.sigmacomputing.com/reference/delete-materialization-schedule
   https://help.sigmacomputing.com/reference/create-data-model-materialization-schedule
   https://help.sigmacomputing.com/reference/patch-data-model-materialization-schedule
   https://help.sigmacomputing.com/reference/delete-data-model-materialization-schedule
-Those same pages note: an element can have at most one schedule (hence no separate
-schedule-id below), and CREATE starts an immediate materialization run on creation.
-
-Despite the confirmed shape, every verb (including read-only GET) 404'd with header
-"errorcause: UnmatchedHandler" against a live test org as of 2026-08-04 — confirmed via
-real-vs-fake-ID and working-sibling-endpoint controls, not assumed. That 404 has two
-possible causes, not just one: (a) a rollout gap — this org's cluster doesn't yet expose
-the private-beta route, or (b) the wrong --sheet value — the IDs tried came from a `GET
-.../elements` listing, not from an actual `list` `sheetId` (no schedule existed yet to
-list), so "a list-reported sheetId is the same ID this route calls elementId" was never
-itself confirmed against a working route. A bare 404 alone can't tell (a) from (b) — if
-create/update/delete 404 for you, double-check the element ID (e.g. via `GET
-/v2/workbooks/{id}/elements` or `/v2/dataModels/{id}/elements`) before concluding the
-feature isn't rolled out. `list` and `run` (pre-existing, unchanged below) are
-unaffected and already live-verified working.
+An element can have at most one schedule, and CREATE starts an immediate run. Use
+`--dry-run` to inspect any state-changing request before sending it.
 
   list:    python3 scripts/materialize.py list   --workbook <workbookId>
            python3 scripts/materialize.py list   --datamodel <dataModelId>
-  run:     python3 scripts/materialize.py run    --workbook <workbookId>  --sheet <elementId>
-           python3 scripts/materialize.py run    --datamodel <dataModelId> --sheet <elementId>
-  create:  python3 scripts/materialize.py create --workbook <workbookId>  --sheet <elementId> --cron "0 0 * * *" [--timezone America/New_York]
-           python3 scripts/materialize.py create --datamodel <dataModelId> --sheet <elementId> --cron "0 0 * * *"
+  run:     python3 scripts/materialize.py run    --workbook <workbookId>  --sheet-id <sheetId>
+           python3 scripts/materialize.py run    --datamodel <dataModelId> --sheet-id <sheetId>
+  create:  python3 scripts/materialize.py create --workbook <workbookId>  --element-id <elementId> --cron "0 0 * * *" [--timezone America/New_York]
+           python3 scripts/materialize.py create --datamodel <dataModelId> --element-id <elementId> --cron "0 0 * * *"
   update:  same flags as create, against an existing schedule
-  delete:  python3 scripts/materialize.py delete --workbook <workbookId>  --sheet <elementId> [--yes]
-           python3 scripts/materialize.py delete --datamodel <dataModelId> --sheet <elementId> [--yes]
+  delete:  python3 scripts/materialize.py delete --workbook <workbookId>  --element-id <elementId> [--yes]
+           python3 scripts/materialize.py delete --datamodel <dataModelId> --element-id <elementId> [--yes]
            # delete is destructive (cancels all future runs, no undo) — prompts for
            # confirmation unless --yes is passed.
 
@@ -55,6 +38,32 @@ import argparse, json, os, sys, time, urllib.request, urllib.parse, urllib.error
 
 BASE = os.environ.get("SIGMA_BASE_URL", "").rstrip("/")
 TOKEN = os.environ.get("SIGMA_API_TOKEN", "")
+
+
+def authenticate():
+    global TOKEN
+    if TOKEN:
+        return
+    client_id = os.environ.get("SIGMA_CLIENT_ID")
+    client_secret = os.environ.get("SIGMA_CLIENT_SECRET")
+    if not BASE or not client_id or not client_secret:
+        sys.exit("Set SIGMA_BASE_URL and either SIGMA_API_TOKEN or "
+                 "SIGMA_CLIENT_ID + SIGMA_CLIENT_SECRET.")
+    form = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }).encode()
+    req = urllib.request.Request(
+        f"{BASE}/v2/auth/token", data=form, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            TOKEN = json.load(response)["access_token"]
+    except urllib.error.HTTPError as exc:
+        sys.exit(f"Sigma auth -> HTTP {exc.code}: "
+                 f"{exc.read().decode(errors='replace')[:300]}")
 
 
 def api(method, path, body=None):
@@ -73,28 +82,40 @@ def api(method, path, body=None):
 
 def list_schedules(args):
     if args.workbook:
-        d = api("GET", f"/v2/workbooks/{args.workbook}/materialization-schedules?limit=200")
+        path = f"/v2.1/workbooks/{args.workbook}/materialization-schedules"
     else:
-        d = api("GET", f"/v2/dataModels/{args.datamodel}/materializationSchedules?limit=200")
-    ents = d.get("entries", [])
+        path = f"/v2/dataModels/{args.datamodel}/materializationSchedules"
+    ents, page = [], None
+    while True:
+        params = {"limit": 200} if args.workbook else {"pageSize": 200}
+        if page:
+            params["page" if args.workbook else "pageToken"] = page
+        d = api("GET", path + "?" + urllib.parse.urlencode(params))
+        ents.extend(d.get("entries", []))
+        page = d.get("nextPage") or d.get("nextPageToken")
+        if not page:
+            break
     print(f"{len(ents)} materialization schedule(s):")
     for e in ents:
         sch = e.get("schedule") or {}
-        print(f"  sheetId={e.get('sheetId')}  element={e.get('elementName')!r}  "
+        print(f"  sheetId={e.get('sheetId')}  elementId={e.get('elementId')}  "
+              f"element={e.get('elementName')!r}  "
               f"cron={sch.get('cronSpec')}  tz={sch.get('timezone')}  paused={e.get('paused')}")
     if not ents:
-        print("  (none — create one with `materialize.py create --sheet <elementId> --cron "
-              "\"<cron>\"` (private beta REST) or via the Sigma UI: element ⋮ → Materialization)")
+        print("  (none — create one with `materialize.py create --element-id <elementId> --cron "
+              "\"<cron>\"` (public beta REST) or via the Sigma UI: element ⋮ → Materialization)")
     return ents
 
 
 def _schedule_path(args):
-    """Element-scoped materializationSchedules path (create/update/delete) — new
-    private-beta route, NOT the same as list_schedules' unscoped workbook/data-model
+    """Element-scoped materializationSchedules path (create/update/delete), NOT the
+    same as list_schedules' unscoped workbook/data-model
     path above."""
     if args.workbook:
-        return f"/v2/workbooks/{args.workbook}/elements/{args.sheet}/materializationSchedules"
-    return f"/v2/dataModels/{args.datamodel}/elements/{args.sheet}/materializationSchedules"
+        return (f"/v2/workbooks/{args.workbook}/elements/"
+                f"{args.element_id}/materializationSchedules")
+    return (f"/v2/dataModels/{args.datamodel}/elements/"
+            f"{args.element_id}/materializationSchedules")
 
 
 def _schedule_body(args):
@@ -105,11 +126,19 @@ def _schedule_body(args):
 
 
 def create_schedule(args):
+    if args.dry_run:
+        return print(json.dumps({"dryRun": True, "method": "POST",
+                                 "path": _schedule_path(args),
+                                 "body": _schedule_body(args)}, indent=2))
     d = api("POST", _schedule_path(args), _schedule_body(args))
     print(json.dumps(d, indent=2))
 
 
 def update_schedule(args):
+    if args.dry_run:
+        return print(json.dumps({"dryRun": True, "method": "PATCH",
+                                 "path": _schedule_path(args),
+                                 "body": _schedule_body(args)}, indent=2))
     d = api("PATCH", _schedule_path(args), _schedule_body(args))
     print(json.dumps(d, indent=2))
 
@@ -117,9 +146,12 @@ def update_schedule(args):
 def delete_schedule(args):
     target = args.workbook or args.datamodel
     kind = "workbook" if args.workbook else "datamodel"
+    if args.dry_run:
+        return print(json.dumps({"dryRun": True, "method": "DELETE",
+                                 "path": _schedule_path(args)}, indent=2))
     if not args.yes:
         resp = input(f"Delete the materialization schedule for {kind}={target} "
-                     f"sheet={args.sheet}? This cancels all future scheduled runs and "
+                     f"element={args.element_id}? This cancels all future scheduled runs and "
                      f"cannot be undone. Type 'yes' to confirm: ")
         if resp.strip().lower() != "yes":
             sys.exit("Aborted (pass --yes to skip this prompt).")
@@ -136,7 +168,7 @@ def poll(get_path, job_id, timeout=300):
         print(f"    [{int(time.time()-t0)}s] status={st or j}", file=sys.stderr)
         if st in ("completed", "success", "succeeded", "ready", "done"):
             return j, True
-        if st in ("failed", "error", "cancelled"):
+        if st in ("failed", "error", "cancelled", "canceled"):
             return j, False
         time.sleep(5)
     return {}, False
@@ -144,30 +176,40 @@ def poll(get_path, job_id, timeout=300):
 
 def run(args):
     if args.workbook:
-        res = api("POST", f"/v2/workbooks/{args.workbook}/materializations",
-                  {"sheetId": args.sheet})
-        mid = res.get("materializationId")
-        job, ok = poll(f"/v2/workbooks/{args.workbook}/materializations", mid)
+        post_path = f"/v2/workbooks/{args.workbook}/materializations"
+        get_path = f"/v2/workbooks/{args.workbook}/materializations"
     else:
-        res = api("POST", f"/v2/dataModels/{args.datamodel}:materialize",
-                  {"sheetId": args.sheet})
-        mid = res.get("materializationId")
-        job, ok = poll(f"/v2/dataModels/{args.datamodel}/materializations", mid)
+        post_path = f"/v2/dataModels/{args.datamodel}:materialize"
+        get_path = f"/v2/dataModels/{args.datamodel}/materializations"
+    body = {"sheetId": args.sheet_id}
+    if args.dry_run:
+        return print(json.dumps({"dryRun": True, "method": "POST",
+                                 "path": post_path, "body": body}, indent=2))
+    res = api("POST", post_path, body)
+    mid = res.get("materializationId")
+    if not mid:
+        sys.exit(f"Trigger returned no materializationId: {json.dumps(res)[:300]}")
+    job, ok = poll(get_path, mid)
     print(json.dumps({"materializationId": mid, "ok": ok, "job": job}, indent=2))
     sys.exit(0 if ok else 1)
 
 
 def main():
-    if not BASE or not TOKEN:
-        sys.exit('Set creds: eval "$(~/.claude/skills/tableau-to-sigma/scripts/get-token.sh)"')
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("list", "run", "create", "update", "delete"):
         s = sub.add_parser(name)
         s.add_argument("--workbook")
         s.add_argument("--datamodel")
+        if name == "run":
+            s.add_argument("--sheet-id", help="sheetId returned by `list`")
+            s.add_argument("--sheet", help=argparse.SUPPRESS)
+        elif name in ("create", "update", "delete"):
+            s.add_argument("--element-id", help="elementId returned by `list`/elements API")
+            s.add_argument("--sheet", help=argparse.SUPPRESS)
         if name in ("run", "create", "update", "delete"):
-            s.add_argument("--sheet", required=True, help="elementId (sheetId from `list`)")
+            s.add_argument("--dry-run", action="store_true",
+                           help="print the state-changing request without sending it")
         if name in ("create", "update"):
             s.add_argument("--cron", required=True, help='cron expression, e.g. "0 0 * * *"')
             s.add_argument("--timezone", help="IANA timezone, e.g. America/New_York (optional)")
@@ -177,6 +219,20 @@ def main():
     a = ap.parse_args()
     if not (a.workbook or a.datamodel):
         sys.exit("pass --workbook <id> or --datamodel <id>")
+    if a.workbook and a.datamodel:
+        sys.exit("pass exactly one of --workbook or --datamodel")
+    if a.cmd == "run":
+        a.sheet_id = a.sheet_id or a.sheet
+        if not a.sheet_id:
+            sys.exit("run requires --sheet-id <sheetId>")
+    elif a.cmd in ("create", "update", "delete"):
+        a.element_id = a.element_id or a.sheet
+        if not a.element_id:
+            sys.exit(f"{a.cmd} requires --element-id <elementId>")
+    if not getattr(a, "dry_run", False):
+        if not BASE:
+            sys.exit("Set SIGMA_BASE_URL.")
+        authenticate()
     dispatch = {
         "list": list_schedules,
         "run": run,

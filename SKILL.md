@@ -1,48 +1,45 @@
 ---
-name: sigma-materialization-advisor
+name: sigma-performance-cost-advisor
 description: >-
-  Find the Sigma workbooks / data models / elements driving the most Snowflake
-  compute and recommend how to cut it — by improving the query in-place or by
-  materializing via the Sigma API. Joins Snowflake ACCOUNT_USAGE credit attribution
-  back to the Sigma object that issued each query (via the Sigma QUERY_TAG), ranks
-  materialization candidates, and can trigger/monitor materializations through the
-  REST API. Use to scope or run a Snowflake-cost / materialization project for a
-  Sigma org. Read-only analysis; remediation is opt-in.
+  Keep Sigma fast while lowering Snowflake cost. Attribute compute to Sigma objects,
+  measure whether materializations serve observed reads, and recommend keep, retune,
+  investigate, remove, add, or optimize-query actions against latency and freshness
+  constraints. Read-only analysis; remediation is explicit and opt-in.
 user-invocable: true
 ---
 
-# Sigma Materialization Advisor
+# Sigma Performance & Cost Advisor
 
-> **STATUS: working, validated live** end-to-end against a production Sigma org on
-> Snowflake (cost attribution + materialization trigger). Analysis is read-only; the
-> materialization *run* is an explicit opt-in action.
+> **STATUS: validated live** against Sigma and Snowflake: full cost coverage, schedule
+> and lineage reads, `ACCESS_HISTORY` utilization matching, on-demand refresh polling,
+> and capped element exports. Analysis is read-only; mutations require explicit commands.
 
-**Read first:** `refs/materialization-playbook.md` (which technique for which signal),
+**Read first:** `refs/performance-cost-playbook.md` (decision evidence and safeguards),
 `PRIVACY.md` (read-only analysis posture).
 
 ## The key idea
 Sigma stamps **every** warehouse query's `QUERY_TAG` with `Sigma Σ {json}` containing
 `sourceUrl` (org + workbook/data-model + element), `email`, and `kind`. Snowflake's
-`QUERY_ATTRIBUTION_HISTORY` gives **real compute credits per `query_id`**. Join the two
-and you can attribute Snowflake cost to the exact Sigma object that caused it, then rank
-what to materialize or fix.
+`QUERY_ATTRIBUTION_HISTORY` gives real credits. `ACCESS_HISTORY` reveals whether workbook
+queries read objects built by materialization jobs. Evaluate refresh TCO and observed
+performance together; never infer that deletion is safe from refresh cost alone.
 
 ## Inputs / access
 - **Snowflake** via the `snow` CLI (a connection with read access to
-  `SNOWFLAKE.ACCOUNT_USAGE`). SSO (`externalbrowser`) or key-pair both work.
-- **Sigma REST** (`SIGMA_API_TOKEN` + `SIGMA_BASE_URL`) — only for the remediation
-  actions (resolve object IDs, list/trigger materializations).
+  `SNOWFLAKE.ACCOUNT_USAGE`; `ACCESS_HISTORY` requires the applicable Enterprise
+  privileges). SSO (`externalbrowser`) or key-pair both work.
+- **Sigma REST** (`SIGMA_BASE_URL` plus a token or client credentials) — for read-only
+  schedule/control/lineage enrichment and explicit remediation actions.
 
-## Intake — ASK THESE before the first run
-The right thresholds depend on the customer's economics and SLAs, so **ask these
-questions first** (use the AskUserQuestion tool), then pass the answers as flags or a
-`--config` JSON. Don't run with blind defaults on a real customer.
+## Intake — ask before the first run
+Persist answers in `advisor-config.json`; do not use blind defaults for a customer.
 
 | Ask | Maps to | Why |
 |---|---|---|
-| **How fresh must dashboards be?** real-time / ≤1h / ≤1 day / varies | cadence advice; if real-time, materialization is mostly off the table | Materialized data is by definition slightly stale |
-| **Primary goal?** cut cost / speed up slow dashboards / both | weights credits vs. latency in what you highlight | Changes which candidates matter |
-| **How aggressive?** conservative / balanced / aggressive | `--mat-min-runs` / `--mat-min-avg-sec` / `--mat-min-credits` | Conservative = only obvious wins; aggressive = flag more |
+| **Latency target?** p95 seconds + acceptable slowdown | recommendation constraint | Prevents cost cuts that make dashboards unusably slow |
+| **How fresh?** real-time / ≤1h / ≤1 day / varies | cadence and eligibility | Real-time disables add-materialization advice |
+| **Primary goal?** cost / latency / performance per dollar | ranking | Changes which opportunities lead |
+| **Minimum savings?** dollars/month | removal threshold | Avoids operational work for immaterial savings |
 
 **$ per credit is auto-detected** — `analyze.py` reads the account's effective rate from
 `SNOWFLAKE.ORGANIZATION_USAGE.usage_in_currency_daily` (then `rate_sheet_daily`). Only ask
@@ -59,28 +56,26 @@ Persist the answers in `advisor-config.json` (see `advisor-config.example.json`)
 `--config advisor-config.json` so re-runs are consistent.
 
 ## Phases
-1. **Analyze** — `scripts/analyze.py --conn <snow> --days 30 [--org <slug>] [--config ...]` →
-   attributes credits to Sigma objects, ranks candidates → `inventory.json` + `REPORT.md`.
-2. **Report** — `scripts/render-html.py` → customer-facing HTML.
-3. **Remediate (opt-in), two levers per candidate:**
-   - **A — Improve the query** in the workbook/data model (push calc logic upstream,
-     declare relationships, drop unused columns). Pull/edit specs via the Sigma API;
-     pairs with `sigma-data-model-assessment`.
-   - **B — Materialize via API** — `scripts/materialize.py list|create|update|delete|run`.
-     Schedule create/update/delete are private-beta REST endpoints (cron cadence only, no
-     destination field) — see `refs/materialization-playbook.md` for exact shapes and a
-     live-deployment caveat; `list`/`run` are pre-existing and unaffected. `delete` is
-     destructive and prompts for confirmation unless `--yes` is passed.
+1. **Analyze** — full Sigma cost coverage, source-level workload, materialization
+   utilization, and warehouse context → schema-v2 `inventory.json` + `REPORT.md`.
+2. **Enrich** — `scripts/enrich.py` resolves schedules, controls, and lineage. Because
+   current APIs do not expose control target bindings, any control-bearing workbook is
+   `review required`.
+3. **Report** — render keep/retune/investigate/remove/add/query-optimization decisions.
+4. **Remediate (opt-in)** — use `materialize.py --dry-run` first. Removal requires a
+   measured no-materialization baseline, owner approval, and rollback details.
 
 ## Scripts
 | Script | Purpose |
 |---|---|
-| `scripts/analyze.py` | Snowflake credit attribution → ranked candidates → `inventory.json` + `REPORT.md` |
-| `scripts/materialize.py` | `list` / `create` / `update` / `delete` (schedule CRUD, private beta) / `run` (trigger + poll) a Sigma materialization via REST |
+| `scripts/analyze.py` | Snowflake cost/performance evidence → v2 inventory + report |
+| `scripts/cost_model.py` | pure recommendation and savings logic |
+| `scripts/enrich.py` | read-only Sigma API schedule/control/lineage pass |
+| `scripts/materialize.py` | explicit schedule CRUD / refresh with `--dry-run` |
 | `scripts/render-html.py` | `inventory.json` → customer-facing `report.html` |
 
-Flags (`analyze.py`): `--conn`, `--days`, `--org <slug>` (scope to one Sigma org; omit
-for account-wide), `--min-runs`, `--limit`, `--out`.
+Key flags (`analyze.py`): `--conn`, `--days`, `--org`, `--latency-slo-sec`,
+`--freshness`, `--acceptable-slowdown-sec`, `--goal`, `--config`, and `--out`.
 
 ## Cortex Code note
 The attribution SQL is portable — it runs equally well from Cortex Code / a Snowflake
@@ -88,17 +83,10 @@ notebook if a team prefers to keep the analysis in-warehouse (no creds to manage
 never leaves the account). The Sigma-side mapping and materialization actions need the
 Sigma REST API, so the end-to-end loop lives here.
 
-## Open work
-- **Materialization schedule create/update/delete** are private-beta REST endpoints
-  (`scripts/materialize.py create|update|delete`) — path/body shape confirmed correct
-  against Sigma's own live help-center reference pages (cited in
-  `refs/materialization-playbook.md` and the `materialize.py` docstring), but
-  live-verified as not yet reachable on at least one test org as of 2026-08-04 (404
-  `errorcause: UnmatchedHandler` on every verb tried). That 404 could mean either a
-  rollout gap on that org's cluster *or* a bad element/workbook/data-model ID — re-check
-  the ID with `list` before depending on create/update/delete for a given org.
-  `list`/`run`/monitor remain fully live-verified working.
-- ID resolution: `analyze.py` reports the `sourceUrl`; an optional `--resolve` pass could
-  turn each candidate into a ready-to-run `materialize.py` command (workbookId + sheetId).
-- `--consumers`-style fan-out: for a data-model candidate, count how many workbooks
-  benefit from materializing it (raises its priority).
+## Non-negotiable safeguards
+- Report all Sigma-tagged cost and the attributable percentage; never label a limited
+  candidate list as total spend.
+- Keep unmatched materialization reads as an explicit unknown bucket.
+- Never recommend removal without a measured counterfactual inside the latency allowance.
+- Treat warehouse idle as an upper bound, not as Sigma-attributable savings.
+- Do not automatically act on controls, semantic changes, warehouse sizing, or deletion.

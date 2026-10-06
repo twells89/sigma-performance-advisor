@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inventory.json -> customer-facing report.html for the materialization advisor.
+"""inventory.json -> customer-facing Sigma performance-and-cost report.
    python3 scripts/render-html.py --inv out/inventory.json --out out/report.html --customer "Acme"
 """
 import argparse, html, json, datetime
@@ -12,17 +12,19 @@ def esc(s):
 def render(inv, customer):
     t = inv["totals"]
     cands = inv["candidates"]
-    mat = [c for c in cands if c["RECOMMENDATION"].startswith("Materialize")]
-    imp = [c for c in cands if c["RECOMMENDATION"].startswith("Improve")]
     gen = inv.get("generated", "")[:10] or datetime.date.today().isoformat()
     cfg = inv.get("config", {})
     dollars = t.get("dollars")
+    coverage = t.get("credit_coverage_pct")
+    action_counts = t.get("actions", {})
     kpis = [
         ("Sigma queries", f"{t['queries']:,}", f"last {inv['days']} days"),
         ("Compute cost", f"${dollars:,.0f}" if dollars else f"{t['credits']:.2f} cr",
          f"{t['credits']:.1f} credits @ ${cfg.get('credit_price','?')}"),
-        ("Materialize", f"{len(mat)}", "repetitive + non-trivial"),
-        ("Improve query", f"{len(imp)}", "slow / large single runs"),
+        ("Attribution coverage", f"{coverage:.1f}%" if coverage is not None else "unknown",
+         "Sigma credits mapped to a source URL"),
+        ("Modeled savings", f"${t.get('estimated_monthly_savings',0):,.0f}/mo",
+         f"{sum(action_counts.values())} reviewed opportunities"),
     ]
     kpi_html = "".join(
         f"<div class='kpi'><div class='kpi-v'>{esc(v)}</div><div class='kpi-l'>{esc(l)}</div>"
@@ -32,24 +34,30 @@ def render(inv, customer):
         obj = (c["OBJECT"] or "").replace("/workbook/", "wb: ").replace("/data-model/", "dm: ").replace("/report/", "rpt: ")
         url = c.get("SAMPLE_URL")
         obj_cell = f"<a href='{esc(url)}' target='_blank' rel='noopener'>{esc(obj)}</a>" if url else esc(obj)
-        rec = c["RECOMMENDATION"]
-        if rec.startswith("Materialize"):
-            badge, cls = "B · Materialize", "mat"
-        elif rec.startswith("Improve"):
-            badge, cls = "A · Improve query", "imp"
-        else:
-            badge, cls = "Monitor", "rev"
+        rec = c.get("ACTION") or c.get("RECOMMENDATION")
+        cls = ("keep" if rec.startswith("Keep") else
+               "remove" if rec.startswith("Remove") else
+               "retune" if rec.startswith("Retune") else
+               "investigate" if rec.startswith("Investigate") else
+               "improve" if rec.startswith("Optimize") else
+               "add" if rec.startswith("Add") else "monitor")
         rows += (f"<tr><td>{i}</td><td class='obj'>{obj_cell}</td><td>{esc(c['ELEMENT'])}</td>"
-                 f"<td class='num'>{c['RUNS']}</td><td class='num'>{c['CREDITS']:.4f}</td>"
-                 f"<td class='num'>{c['AVG_SEC']:.2f}</td><td class='num'>{c['MAX_SEC']:.2f}</td>"
-                 f"<td><span class='pill {cls}'>{esc(badge)}</span><div class='why'>{esc(c['WHY'])}</div></td></tr>")
+                 f"<td class='num'>{c.get('RUNS',0)}</td>"
+                 f"<td class='num'>{c.get('TOTAL_CREDITS',c.get('CREDITS',0)):.4f}</td>"
+                 f"<td class='num'>{c.get('P95_SEC',0):.2f}</td>"
+                 f"<td class='num'>{c.get('MATERIALIZATION_RUNS',0)}</td>"
+                 f"<td class='num'>{c.get('MATCHED_MATERIALIZED_READS',0)}</td>"
+                 f"<td><span class='pill {cls}'>{esc(rec)}</span>"
+                 f"<div class='why'>{esc(c['WHY'])}</div>"
+                 f"<div class='why'><b>Validate:</b> {esc(c.get('VALIDATION',''))}</div></td></tr>")
     return PAGE.format(customer=esc(customer), gen=esc(gen), scope=esc(inv["scope"]),
-                       days=inv["days"], kpis=kpi_html, rows=rows)
+                       days=inv["days"], kpis=kpi_html, rows=rows,
+                       coverage=esc(coverage if coverage is not None else "unknown"))
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sigma → Snowflake Materialization — {customer}</title><style>
+<title>Sigma Performance &amp; Cost — {customer}</title><style>
 :root{{--ink:#1a2233;--mut:#5b6779;--line:#e6e9f0;--bg:#f6f8fb;--accent:#2f6f4f;--mat:#2f9e44;--rev:#868e96;}}
 *{{box-sizing:border-box}}body{{margin:0;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;color:var(--ink);background:var(--bg)}}
 .wrap{{max-width:980px;margin:0 auto;padding:0 28px 80px}}
@@ -67,42 +75,38 @@ th{{background:#eef3f0;font-size:11.5px;text-transform:uppercase;letter-spacing:
 td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.obj{{font-weight:600}}
 tr:last-child td{{border-bottom:none}}
 .pill{{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;color:#fff;white-space:nowrap}}
-.pill.mat{{background:var(--mat)}}.pill.imp{{background:#1971c2}}.pill.rev{{background:var(--rev)}}
+.pill.keep{{background:#2f9e44}}.pill.add,.pill.improve{{background:#1971c2}}
+.pill.retune{{background:#e67700}}.pill.investigate{{background:#f08c00}}
+.pill.remove{{background:#c92a2a}}.pill.monitor{{background:var(--rev)}}
 .why{{color:var(--mut);font-size:11.5px;margin-top:4px}}
 .card{{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin-top:14px}}
 .card h3{{margin:0 0 6px;font-size:16px}}.opt{{border-left:4px solid var(--mat);padding-left:14px;margin:12px 0}}
 .opt.a{{border-left-color:#1971c2}}code{{background:#eef1f8;padding:1px 5px;border-radius:4px;font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px}}
 .note{{color:var(--mut);font-size:12.5px}}footer{{color:var(--mut);font-size:12.5px;margin-top:36px;border-top:1px solid var(--line);padding-top:14px}}
 </style></head><body>
-<header><div class="wrap"><p class="eyebrow">Sigma · Snowflake Cost &amp; Materialization</p>
-<h1>{customer}</h1><div class="sub">High-compute Sigma queries and how to reduce them · scope: {scope} · last {days} days</div>
+<header><div class="wrap"><p class="eyebrow">Sigma · Performance per Dollar</p>
+<h1>{customer}</h1><div class="sub">Fast results at the lowest sustainable cost · scope: {scope} · last {days} days</div>
 <span class="ro">🔒 Read-only analysis — no changes made to Snowflake or Sigma</span></div></header>
 <div class="wrap">
 <div class="kpis">{kpis}</div>
-<h2>Top compute candidates</h2>
-<p class="note">Ranked by attributed Snowflake credits × frequency. <b>A · Improve query</b> lowers cost per run;
-<b>B · Materialize</b> removes redundant runs; <b>Monitor</b> = too cheap to be worth either today.
-An object is only flagged <b>Materialize</b> when it is genuinely repetitive <i>and</i> non-trivial per run —
-caching a fast, cheap query costs more to refresh than it saves.</p>
+<h2>Recommended decisions</h2>
+<p class="note">Coverage is <b>{coverage}%</b> of Sigma query credits. Recommendations compare
+query cost and latency with observed materialization refreshes and reads. A schedule is never
+marked safe to remove from refresh cost alone.</p>
 <table><thead><tr><th>#</th><th>Object</th><th>Element</th><th class="num">Runs</th><th class="num">Credits</th>
-<th class="num">Avg s</th><th class="num">Max s</th><th>Recommended remediation</th></tr></thead>
+<th class="num">p95 s</th><th class="num">Refreshes</th><th class="num">Matched reads</th><th>Decision</th></tr></thead>
 <tbody>{rows}</tbody></table>
 
-<h2>Two ways to remediate</h2>
+<h2>Decision policy</h2>
 <div class="card">
-<div class="opt a"><h3>Option A — Improve the query (workbook / data model)</h3>
-Pull the object's spec via the Sigma API and fix what makes a single run expensive: push heavy
-calc-column logic upstream, declare relationships instead of cross-element <code>Lookup()</code>,
-drop unused columns, pre-aggregate. Best when one run is slow or scans a lot.</div>
-<div class="opt"><h3>Option B — Materialize via the Sigma API</h3>
-Cache an element's result so repeat views read a stored table instead of recomputing — best for
-<i>repetitive</i> objects. Create, update, and delete a schedule's cron cadence (no destination
-field) end to end via the API, then trigger/monitor refreshes:
-<div style="margin-top:8px"><code>materialize.py list --workbook &lt;id&gt;</code> → <code>materialize.py create --workbook &lt;id&gt; --sheet &lt;elementId&gt; --cron "0 0 * * *"</code> → <code>materialize.py run --workbook &lt;id&gt; --sheet &lt;elementId&gt;</code></div>
-<div class="note" style="margin-top:8px">Note: schedule create/update/delete are a private-beta REST surface — see refs/materialization-playbook.md for exact shapes and a live-deployment caveat.</div></div>
+<div class="opt a"><h3>Optimize before caching</h3>Fix pruning, spill, joins, calculations,
+and warehouse pressure when a single run is intrinsically expensive.</div>
+<div class="opt"><h3>Keep, retune, investigate, remove, or add</h3>Use observed served reads per
+refresh and p95 latency. Controls or incomplete lineage require review. Removal requires a measured
+no-materialization baseline and a rollback plan.</div>
 </div>
-<footer>Read-only: <code>SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY</code> + <code>QUERY_ATTRIBUTION_HISTORY</code>,
-joined on query_id; Sigma objects resolved from each query's <code>QUERY_TAG</code>. Prepared for {customer}.</footer>
+<footer>Read-only analysis: <code>QUERY_HISTORY</code>, <code>QUERY_ATTRIBUTION_HISTORY</code>,
+<code>ACCESS_HISTORY</code>, and <code>WAREHOUSE_METERING_HISTORY</code>. Prepared for {customer}.</footer>
 </div></body></html>"""
 
 
