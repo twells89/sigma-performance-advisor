@@ -1,3 +1,4 @@
+import importlib
 import json
 import subprocess
 import sys
@@ -7,9 +8,40 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+MATERIALIZATION_SQL = importlib.import_module("analyze").MATERIALIZATION_SQL
+match_workbook = importlib.import_module("enrich").match_workbook
 
 
 class PipelineTests(unittest.TestCase):
+    def test_workbook_matching_rejects_substring_collisions(self):
+        candidate = {
+            "OBJECT": "/workbook/Customer-Overview-jjj000",
+            "SAMPLE_URL": (
+                "https://app.sigmacomputing.com/northwind/workbook/"
+                "Customer-Overview-jjj000?:displayNodeId=orders"
+            ),
+        }
+        wrong = {
+            "workbookId": "Overview",
+            "workbookUrlId": "Overview",
+            "url": "https://app.sigmacomputing.com/northwind/workbook/Overview",
+        }
+        expected = {
+            "workbookId": "workbook-id",
+            "workbookUrlId": "Customer-Overview-jjj000",
+            "url": (
+                "https://app.sigmacomputing.com/northwind/workbook/"
+                "Customer-Overview-jjj000"
+            ),
+        }
+        self.assertIs(match_workbook(candidate, [wrong, expected]), expected)
+
+    def test_report_materializations_are_included_in_utilization_sql(self):
+        self.assertIn("'/(workbook|report)/[^?]+'", MATERIALIZATION_SQL)
+        sql_file = (ROOT / "sql" / "sigma_materialization_roi.sql").read_text()
+        self.assertIn("'/(workbook|report)/[^?]+'", sql_file)
+
     def test_sample_bundle_generates_v2_inventory_and_html(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -74,6 +106,22 @@ class PipelineTests(unittest.TestCase):
             )
             inventory = json.loads((out / "inventory.json").read_text())
             self.assertEqual(inventory["days"], 30)
+
+    def test_org_scoped_bundle_omits_account_wide_warehouse_totals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts" / "analyze.py"),
+                    "--from-rows", str(ROOT / "example" / "sample-rows.json"),
+                    "--org", "northwind", "--credit-price", "3",
+                    "--out", str(out),
+                ],
+                check=True, capture_output=True, text=True,
+            )
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["warehouse"], {})
+            self.assertNotIn("## Warehouse context", (out / "REPORT.md").read_text())
 
 
 if __name__ == "__main__":

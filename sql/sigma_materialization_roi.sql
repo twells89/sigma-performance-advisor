@@ -6,7 +6,7 @@ set org = '';
 
 with tagged as (
   select query_id, total_elapsed_time/1000.0 sec,
-         regexp_substr(j:"sourceUrl"::string, '/workbook/[^?]+') wb_path,
+         regexp_substr(j:"sourceUrl"::string, '/(workbook|report)/[^?]+') wb_path,
          j:"sourceUrl"::string source_url, j:"kind"::string kind,
          split_part(j:"sourceUrl"::string, '/', 4) org,
          regexp_substr(j:"sourceUrl"::string,

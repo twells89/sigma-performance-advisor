@@ -134,7 +134,7 @@ from qh left join att using(query_id);
 MATERIALIZATION_SQL = r"""
 with tagged as (
   select query_id, total_elapsed_time/1000.0 sec,
-         regexp_substr(j:"sourceUrl"::string, '/workbook/[^?]+') wb_path,
+         regexp_substr(j:"sourceUrl"::string, '/(workbook|report)/[^?]+') wb_path,
          j:"sourceUrl"::string source_url, j:"kind"::string kind,
          split_part(j:"sourceUrl"::string, '/', 4) org,
          regexp_substr(j:"sourceUrl"::string, '/(workbook|report|data-model)/[^?]+') object,
@@ -352,6 +352,10 @@ def main():
             "Org-scoped totals exclude Sigma-tagged queries without a sourceUrl "
             "because those queries cannot be assigned safely to an org."
         )
+        warnings.append(
+            "Warehouse idle context is omitted for org scope because warehouse "
+            "metering cannot be safely assigned to one Sigma org."
+        )
     if a.from_rows:
         with open(a.from_rows) as f:
             supplied = json.load(f)
@@ -359,7 +363,8 @@ def main():
             rows = supplied.get("workload", [])
             coverage_rows = supplied.get("coverage", [])
             materialization_rows = supplied.get("materializations", [])
-            warehouse_rows = supplied.get("warehouses", [])
+            if not a.org:
+                warehouse_rows = supplied.get("warehouses", [])
         else:
             rows = supplied.get("rows", supplied) if isinstance(supplied, dict) else supplied
     else:
@@ -376,12 +381,7 @@ def main():
             materialization_rows = run_sql(a.conn, mat_sql)
         except Exception as e:
             warnings.append("Materialization utilization unavailable: " + str(e)[:240])
-        if a.org:
-            warnings.append(
-                "Warehouse idle context is omitted for org scope because warehouse "
-                "metering cannot be safely assigned to one Sigma org."
-            )
-        else:
+        if not a.org:
             try:
                 warehouse_rows = run_sql(
                     a.conn, WAREHOUSE_SQL.replace("{DAYS}", str(a.days))

@@ -81,16 +81,23 @@ def descendants(lineage, element_id):
 def match_workbook(candidate, workbooks):
     obj = str(candidate.get("OBJECT") or "")
     sample = str(candidate.get("SAMPLE_URL") or "")
+    candidate_paths = {
+        urllib.parse.urlparse(value).path.rstrip("/")
+        for value in (obj, sample) if value
+    }
+    candidate_paths.discard("")
+    candidate_ids = {path.rsplit("/", 1)[-1] for path in candidate_paths}
     for workbook in workbooks:
-        values = (
-            str(workbook.get("workbookId") or ""),
-            str(workbook.get("workbookUrlId") or ""),
-            str(workbook.get("url") or ""),
-        )
-        if any(value and (value in obj or value in sample) for value in values):
+        workbook_id = str(workbook.get("workbookId") or "")
+        workbook_url_id = str(workbook.get("workbookUrlId") or "")
+        url = str(workbook.get("url") or "")
+        if workbook_id in candidate_ids or workbook_url_id in candidate_ids:
             return workbook
-        url_path = urllib.parse.urlparse(values[2]).path if values[2] else ""
-        if obj and url_path.endswith(obj):
+        url_path = urllib.parse.urlparse(url).path.rstrip("/") if url else ""
+        if url_path and any(
+            path == url_path or (path.startswith("/") and url_path.endswith(path))
+            for path in candidate_paths
+        ):
             return workbook
     return None
 
