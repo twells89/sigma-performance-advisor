@@ -24,7 +24,9 @@ class FakeClient:
     def get(self, path):
         route = urlparse(path).path
         self.calls.append(route)
-        value = self.routes.get(route)
+        # a contents read has its own route (same path as the metadata read, plus
+        # the query); every other query string is ignored
+        value = self.routes.get(path if "includeContents" in path else route)
         if value is None:
             raise RuntimeError(f"GET {route} -> HTTP 404")
         return value
@@ -40,7 +42,7 @@ def routes_for(wid, queries, schedules=()):
     # per-workbook formulas keep spec-based logic unique, so SQL grouping is exercised
     elements = [spec_el(q["elementId"], DM, [f"[{wid}/{q['elementId']}]"]) for q in queries]
     return {
-        f"/v2/workbooks/{wid}/spec": spec(*elements),
+        f"/v2/workbooks/{wid}?includeContents=true": spec(*elements),
         f"/v2/workbooks/{wid}": workbook(wid),
         f"/v2/workbooks/{wid}/queries": {"entries": queries, "nextPage": None},
         f"/v2.1/workbooks/{wid}/materialization-schedules":
@@ -265,7 +267,7 @@ DM = {"kind": "data-model", "dataModelId": "dm-1", "elementId": "dm-el"}
 
 
 def spec(*elements):
-    return {"document": {"elements": list(elements), "pages": []}}
+    return {"workbookId": "wb", "contents": {"elements": list(elements), "pages": []}}
 
 
 class LogicTests(unittest.TestCase):
@@ -325,9 +327,13 @@ class LogicTests(unittest.TestCase):
         self.assertNotIn("secret", ref)
 
     def test_spec_elements_reads_nested_page_elements(self):
-        doc = {"document": {"elements": [spec_el("a", DM, [])],
+        doc = {"contents": {"elements": [spec_el("a", DM, [])],
                             "pages": [{"elements": [spec_el("b", DM, [])]}]}}
         self.assertEqual(set(scan.spec_elements(doc)), {"a", "b"})
+
+    def test_spec_elements_still_reads_the_older_document_wrapper(self):
+        doc = {"document": {"elements": [spec_el("a", DM, [])], "pages": []}}
+        self.assertEqual(set(scan.spec_elements(doc)), {"a"})
 
 
 class PrecedenceTests(unittest.TestCase):
@@ -378,7 +384,7 @@ class SpecScanTests(unittest.TestCase):
         routes = routes_for(
             wid, [query("m", sql or "select 1 from W.S." + '"t_mat_' + wid * 4 + '_0"')],
             [schedule("m", cron)])
-        routes[f"/v2/workbooks/{wid}/spec"] = spec(spec_el("m", DM, ["[T/A]"]))
+        routes[f"/v2/workbooks/{wid}?includeContents=true"] = spec(spec_el("m", DM, ["[T/A]"]))
         routes["/v2/members/m1"] = {"email": "analyst@example.com"}
         return routes
 
@@ -395,7 +401,7 @@ class SpecScanTests(unittest.TestCase):
     def test_spec_failure_warns_and_keeps_sql_grouping(self):
         sql = "select 1 from NORTHWIND.SALES.ORDERS"
         routes = {**self.routes("aaaa", "0 * * * *", sql), **self.routes("bbbb", "0 * * * *", sql)}
-        del routes["/v2/workbooks/aaaa/spec"]
+        del routes["/v2/workbooks/aaaa?includeContents=true"]
         out = scan.run(FakeClient(routes), args(workbook=["aaaa", "bbbb"]))
         self.assertTrue(any("spec unavailable" in w for w in out["warnings"]))
         self.assertEqual([g["MATCH"] for g in out["duplicate_groups"]], ["identical-sql"])
@@ -405,8 +411,8 @@ class SpecScanTests(unittest.TestCase):
         # without a spec, two materialized elements reading only their own t_mat tables
         # must not be called identical just because those reads look alike
         routes = {**self.routes("aaaa", "0 * * * *"), **self.routes("bbbb", "0 * * * *")}
-        del routes["/v2/workbooks/aaaa/spec"]
-        del routes["/v2/workbooks/bbbb/spec"]
+        del routes["/v2/workbooks/aaaa?includeContents=true"]
+        del routes["/v2/workbooks/bbbb?includeContents=true"]
         out = scan.run(FakeClient(routes), args(workbook=["aaaa", "bbbb"]))
         self.assertIsNone(out["workbooks"][0]["ELEMENTS"][0]["SQL_SIGNATURE"])
         self.assertNotIn("identical-sql", [g["MATCH"] for g in out["duplicate_groups"]])
@@ -471,7 +477,7 @@ class FoldTests(unittest.TestCase):
         def routes(wid):
             r = routes_for(wid, [query("m", "select 1 from W.S.T1"), query("c", "select 2 from W.S.T2")],
                            [schedule("m", "0 * * * *")])
-            r[f"/v2/workbooks/{wid}/spec"] = spec(
+            r[f"/v2/workbooks/{wid}?includeContents=true"] = spec(
                 spec_el("m", DM, ["[T/A]"]),
                 spec_el("c", {"kind": "table", "elementId": "m"}, ["Sum([M/A])"], kind="bar-chart"))
             r["/v2/members/m1"] = {"email": "analyst@example.com"}

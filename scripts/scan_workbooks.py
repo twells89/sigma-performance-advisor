@@ -173,9 +173,11 @@ def _swap_ids(value, names):
 
 
 def spec_elements(spec):
-    """{element id: element} from a workbook spec response (document.elements, plus
-    any element objects nested in pages)."""
-    doc = (spec or {}).get("document", spec) or {}
+    """{element id: element} from a workbook read with includeContents=true
+    (contents.elements, plus any element objects nested in pages). Also accepts the
+    older `document` wrapper or a bare document."""
+    spec = spec or {}
+    doc = spec.get("contents") or spec.get("document") or spec
     if isinstance(doc, str):
         doc = json.loads(doc)
     found = {}
@@ -460,7 +462,7 @@ class Scanner:
             self.warnings.append(str(exc))
             return wb
         try:
-            logic = spec_elements(self.get(f"/v2/workbooks/{quoted}/spec?format=json"))
+            logic = spec_elements(self.get(f"/v2/workbooks/{quoted}?includeContents=true"))
         except (RuntimeError, ValueError, AttributeError) as exc:
             self.warnings.append(f"workbook spec unavailable, using SQL signatures only: {exc}")
             logic = {}
